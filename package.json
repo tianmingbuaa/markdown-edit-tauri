@@ -1,0 +1,30 @@
+{
+  "name": "mojian",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "assets:sync": "node scripts/sync-vditor-assets.mjs",
+    "predev": "npm run assets:sync",
+    "dev": "vite",
+    "prebuild": "npm run assets:sync",
+    "build": "tsc && vite build",
+    "check": "tsc --noEmit",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@fontsource-variable/manrope": "^5.3.0",
+    "@fontsource-variable/noto-sans-sc": "^5.3.1",
+    "@fontsource-variable/noto-serif-sc": "^5.3.1",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "@tauri-apps/plugin-opener": "^2",
+    "vditor": "^4.0.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~6.0.3",
+    "vite": "^8.0.16"
+  }
+}
