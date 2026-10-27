@@ -155,13 +155,16 @@ jobs:
           path: dist
           merge-multiple: true
 
-      - name: List artifacts
-        run: find dist -type f -printf '%p\n' | sort
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release-assets
+          find dist -type f -exec cp -v {} release-assets/ \;
+          ls -lh release-assets
 
       - name: Create or update release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: release-assets/*
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
