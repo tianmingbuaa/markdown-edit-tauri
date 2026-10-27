@@ -42,7 +42,7 @@ pub struct NoteEntry {
     pub size: u64,
 }
 
-/// The active workspace plus its full note listing.
+/// The active workspace plus its full note and folder listing.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceInfo {
@@ -51,6 +51,17 @@ pub struct WorkspaceInfo {
     /// Human-readable folder name.
     pub name: String,
     pub notes: Vec<NoteEntry>,
+    /// Workspace-relative folder paths using forward slashes, sorted. Empty and
+    /// nested folders are included; the root itself is not.
+    pub folders: Vec<String>,
+}
+
+/// One recursive scan of a workspace: Markdown notes plus visible folders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceScan {
+    pub notes: Vec<NoteEntry>,
+    /// Workspace-relative directory paths using forward slashes, sorted.
+    pub folders: Vec<String>,
 }
 
 /// The securely stored active workspace.
@@ -63,11 +74,12 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    pub fn info(&self, notes: Vec<NoteEntry>) -> WorkspaceInfo {
+    pub fn info(&self, scan: WorkspaceScan) -> WorkspaceInfo {
         WorkspaceInfo {
             path: self.root.to_string_lossy().into_owned(),
             name: self.name.clone(),
-            notes,
+            notes: scan.notes,
+            folders: scan.folders,
         }
     }
 }
@@ -76,22 +88,52 @@ impl Workspace {
 ///
 /// Scanning happens before the caller stores the workspace so a failed open
 /// never leaves a half-initialized workspace in state.
-pub fn open_workspace_folder(path: &Path) -> Result<(Workspace, Vec<NoteEntry>), String> {
+pub fn open_workspace_folder(path: &Path) -> Result<(Workspace, WorkspaceScan), String> {
     let root = security::verify_workspace_dir(path)?;
     let name = workspace_name(&root);
-    let notes = scan_workspace(&root)?;
-    Ok((Workspace { root, name }, notes))
+    let scan = scan_workspace(&root)?;
+    Ok((Workspace { root, name }, scan))
 }
 
-/// Recursively scan `root` for Markdown files.
+/// Create exactly one new directory below `raw_parent` in the workspace.
+///
+/// `raw_parent` is a workspace-relative folder path (`""` is the root) and
+/// `raw_name` is a single folder segment. The parent must already exist; this
+/// never creates intermediate directories and never overwrites an entry.
+pub fn create_folder(root: &Path, raw_parent: &str, raw_name: &str) -> Result<String, String> {
+    security::validate_folder_name(raw_name)?;
+    let parent = security::resolve_parent_dir(root, raw_parent)?;
+    let target = parent.absolute.join(raw_name);
+    security::ensure_vacant(&target, raw_name, &parent.relative)?;
+
+    fs::create_dir(&target).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            format!(
+                "\"{raw_name}\" already exists in {}.",
+                security::describe_folder(&parent.relative)
+            )
+        } else {
+            format!(
+                "Could not create folder \"{}\": {error}",
+                security::join_relative(&parent.relative, raw_name)
+            )
+        }
+    })?;
+
+    Ok(security::join_relative(&parent.relative, raw_name))
+}
+
+/// Recursively scan `root` for Markdown files and visible folders.
 ///
 /// Hidden entries and common noisy directories are skipped. Symlinked entries
 /// are never followed, which prevents both directory loops and escaping the
 /// workspace. Unreadable nested entries are skipped; an unreadable root is an
-/// error. Results are sorted by relative path.
-pub fn scan_workspace(root: &Path) -> Result<Vec<NoteEntry>, String> {
+/// error. Notes and folders are sorted by relative path. Both are collected in
+/// the same pass.
+pub fn scan_workspace(root: &Path) -> Result<WorkspaceScan, String> {
     let root = security::canonical_workspace_root(root)?;
     let mut notes = Vec::new();
+    let mut folders = Vec::new();
     // (directory, relative prefix, depth of the directory below the root)
     let mut pending: Vec<(PathBuf, String, usize)> = vec![(root.clone(), String::new(), 0)];
 
@@ -124,7 +166,7 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<NoteEntry>, String> {
                 continue;
             }
             // Backslashes cannot appear in paths accepted by the path security
-            // layer, so don't advertise files whose relative path would be
+            // layer, so don't advertise entries whose relative path would be
             // unreadable through the API.
             if file_name.contains('\\') {
                 continue;
@@ -149,6 +191,7 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<NoteEntry>, String> {
                 if depth >= MAX_SCAN_DEPTH || is_noisy_directory(file_name) {
                     continue;
                 }
+                folders.push(relative.clone());
                 pending.push((entry.path(), relative, depth + 1));
             } else if file_type.is_file() {
                 if !security::is_markdown_path(Path::new(file_name)) {
@@ -170,7 +213,8 @@ pub fn scan_workspace(root: &Path) -> Result<Vec<NoteEntry>, String> {
     }
 
     notes.sort_unstable_by(|left, right| left.path.cmp(&right.path));
-    Ok(notes)
+    folders.sort_unstable();
+    Ok(WorkspaceScan { notes, folders })
 }
 
 /// Convert a filesystem modification time to epoch milliseconds.
@@ -240,15 +284,27 @@ mod tests {
             workspace.write(&format!("{noisy}/nested/ignored.md"), "# Ignored");
         }
 
-        let notes = scan_workspace(workspace.path()).unwrap();
+        let scan = scan_workspace(workspace.path()).unwrap();
+        let notes = &scan.notes;
         assert_eq!(
-            paths(&notes),
+            paths(notes),
             vec![
                 "README.MD",
                 "assets/notes.md",
                 "notes/deep/nested/plan.markdown",
                 "notes/ideas/launch.md",
                 "targets/keep.md",
+            ]
+        );
+        assert_eq!(
+            scan.folders,
+            vec![
+                "assets",
+                "notes",
+                "notes/deep",
+                "notes/deep/nested",
+                "notes/ideas",
+                "targets",
             ]
         );
 
@@ -262,10 +318,43 @@ mod tests {
         assert!(launch.modified > 0);
 
         // Scanning is repeatable and deterministically sorted.
+        let rescan = scan_workspace(workspace.path()).unwrap();
+        assert_eq!(paths(notes), paths(&rescan.notes));
+        assert_eq!(scan.folders, rescan.folders);
+    }
+
+    #[test]
+    fn scan_lists_empty_and_nested_folders_and_skips_excluded_ones() {
+        let workspace = TestDir::new("scan-folders");
+        workspace.write("notes/one.md", "# One");
+        fs::create_dir_all(workspace.path().join("empty")).unwrap();
+        fs::create_dir_all(workspace.path().join("nested/deep/empty")).unwrap();
+        fs::create_dir_all(workspace.path().join(".hidden")).unwrap();
+        fs::create_dir_all(workspace.path().join("node_modules/inside")).unwrap();
+        fs::create_dir_all(workspace.path().join("build")).unwrap();
+        #[cfg(unix)]
+        fs::create_dir_all(workspace.path().join("bad\\name")).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = TestDir::new("scan-folders-outside");
+            fs::create_dir_all(outside.path().join("external")).unwrap();
+            symlink(outside.path(), workspace.path().join("linked")).unwrap();
+        }
+
+        let scan = scan_workspace(workspace.path()).unwrap();
         assert_eq!(
-            paths(&notes),
-            paths(&scan_workspace(workspace.path()).unwrap())
+            scan.folders,
+            vec![
+                "empty",
+                "nested",
+                "nested/deep",
+                "nested/deep/empty",
+                "notes",
+            ]
         );
+        assert_eq!(paths(&scan.notes), vec!["notes/one.md"]);
     }
 
     #[test]
@@ -275,8 +364,9 @@ mod tests {
         let deep_directory = vec!["level"; MAX_SCAN_DEPTH + 1].join("/");
         workspace.write(&format!("{deep_directory}/too-deep.md"), "# Deep");
 
-        let notes = scan_workspace(workspace.path()).unwrap();
-        assert_eq!(paths(&notes), vec!["shallow.md"]);
+        let scan = scan_workspace(workspace.path()).unwrap();
+        assert_eq!(paths(&scan.notes), vec!["shallow.md"]);
+        assert_eq!(scan.folders.len(), MAX_SCAN_DEPTH);
     }
 
     #[cfg(unix)]
@@ -297,29 +387,88 @@ mod tests {
         )
         .unwrap();
 
-        let notes = scan_workspace(workspace.path()).unwrap();
-        assert_eq!(paths(&notes), vec!["real.md"]);
+        let scan = scan_workspace(workspace.path()).unwrap();
+        assert_eq!(paths(&scan.notes), vec!["real.md"]);
+        assert!(scan.folders.is_empty(), "{:?}", scan.folders);
     }
 
     #[test]
     fn opens_a_valid_folder_and_rejects_non_folders() {
         let workspace = TestDir::new("open");
         workspace.write("note.md", "# Note");
-        let (active, notes) = open_workspace_folder(workspace.path()).unwrap();
+        fs::create_dir_all(workspace.path().join("empty")).unwrap();
+        let (active, scan) = open_workspace_folder(workspace.path()).unwrap();
         assert_eq!(active.root, fs::canonicalize(workspace.path()).unwrap());
         assert_eq!(
             active.name,
             workspace.path().file_name().unwrap().to_str().unwrap()
         );
 
-        let info = active.info(notes);
+        let info = active.info(scan);
         assert_eq!(info.path, active.root.to_string_lossy());
         assert_eq!(info.name, active.name);
         assert_eq!(info.notes.len(), 1);
+        assert_eq!(info.folders, vec!["empty"]);
 
         let file = workspace.write("plain.txt", "not a folder");
         assert!(open_workspace_folder(&file).is_err());
         assert!(open_workspace_folder(&workspace.path().join("missing")).is_err());
+    }
+
+    #[test]
+    fn creates_one_folder_and_rejects_invalid_requests() {
+        let workspace = TestDir::new("create-folder");
+        workspace.write("notes/one.md", "# One");
+        let root = workspace.path();
+
+        assert_eq!(create_folder(root, "", "fresh").unwrap(), "fresh");
+        assert!(root.join("fresh").is_dir());
+        assert_eq!(
+            create_folder(root, "notes", "nested").unwrap(),
+            "notes/nested"
+        );
+        assert!(root.join("notes/nested").is_dir());
+
+        // Existing names are never overwritten.
+        assert!(create_folder(root, "", "fresh").is_err());
+        assert!(create_folder(root, "notes", "nested").is_err());
+        assert!(create_folder(root, "", "notes").is_err());
+
+        // The parent must already exist; nothing is created recursively.
+        assert!(create_folder(root, "missing", "child").is_err());
+        assert!(create_folder(root, "../outside", "child").is_err());
+        assert!(create_folder(root, "notes/../../outside", "child").is_err());
+        assert!(create_folder(root, "notes//deep", "child").is_err());
+        assert!(create_folder(root, "notes/..", "child").is_err());
+        assert!(create_folder(root, ".hidden", "child").is_err());
+        assert!(create_folder(root, "/tmp", "child").is_err());
+        assert!(create_folder(root, "C:/notes", "child").is_err());
+
+        // Names must be one visible, platform-safe segment.
+        for name in [
+            "",
+            ".",
+            "..",
+            ".hidden",
+            "a/b",
+            "a\\b",
+            "trailing.",
+            "trailing ",
+            "CON",
+            "com1",
+            "LPT9",
+            "nul",
+        ] {
+            assert!(
+                create_folder(root, "", name).is_err(),
+                "expected rejection for {name:?}"
+            );
+        }
+        assert!(create_folder(root, "", "folder with space").is_ok());
+        assert!(create_folder(root, "", "folder.with.dots").is_ok());
+        assert!(create_folder(root, "", "CON0").is_ok());
+
+        assert!(!root.join("child").exists());
     }
 
     #[test]
@@ -343,10 +492,18 @@ mod tests {
             root: PathBuf::from("/tmp/library"),
             name: "library".to_string(),
         };
-        let info = workspace.info(vec![entry]);
+        let info = workspace.info(WorkspaceScan {
+            notes: vec![entry],
+            folders: vec!["ideas".to_string(), "ideas/empty".to_string()],
+        });
         let value = serde_json::to_value(&info).unwrap();
         assert_eq!(value["path"], "/tmp/library");
         assert_eq!(value["name"], "library");
         assert_eq!(value["notes"][0]["fileName"], "launch.md");
+        assert_eq!(
+            value["folders"],
+            serde_json::json!(["ideas", "ideas/empty"])
+        );
+        assert!(value.get("folders").is_some());
     }
 }

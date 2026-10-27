@@ -53,13 +53,13 @@ impl AppState {
 /// Validate, canonicalize, scan, and activate a workspace folder.
 #[tauri::command]
 async fn open_workspace(path: String, state: State<'_, AppState>) -> Result<WorkspaceInfo, String> {
-    let (workspace, notes) = tauri::async_runtime::spawn_blocking(move || {
+    let (workspace, scan) = tauri::async_runtime::spawn_blocking(move || {
         workspace::open_workspace_folder(Path::new(&path))
     })
     .await
     .map_err(|error| format!("Workspace scan failed: {error}"))??;
 
-    let info = workspace.info(notes);
+    let info = workspace.info(scan);
     state.set(workspace)?;
     Ok(info)
 }
@@ -69,10 +69,58 @@ async fn open_workspace(path: String, state: State<'_, AppState>) -> Result<Work
 async fn rescan_workspace(state: State<'_, AppState>) -> Result<WorkspaceInfo, String> {
     let workspace = state.require()?;
     let root = workspace.root.clone();
-    let notes = tauri::async_runtime::spawn_blocking(move || workspace::scan_workspace(&root))
+    let scan = tauri::async_runtime::spawn_blocking(move || workspace::scan_workspace(&root))
         .await
         .map_err(|error| format!("Workspace scan failed: {error}"))??;
-    Ok(workspace.info(notes))
+    Ok(workspace.info(scan))
+}
+
+/// Create one new folder below a workspace-relative parent folder.
+#[tauri::command]
+async fn create_folder(
+    parent: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let root = state.require()?.root;
+    tauri::async_runtime::spawn_blocking(move || workspace::create_folder(&root, &parent, &name))
+        .await
+        .map_err(|error| format!("Creating the folder failed: {error}"))?
+}
+
+/// Create one new empty Markdown note below a workspace-relative parent folder.
+#[tauri::command]
+async fn create_note(
+    parent: String,
+    name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let root = state.require()?.root;
+    tauri::async_runtime::spawn_blocking(move || notes::create_note(&root, &parent, &name))
+        .await
+        .map_err(|error| format!("Creating the note failed: {error}"))?
+}
+
+/// Rename one existing note within its current folder.
+#[tauri::command]
+async fn rename_note(
+    path: String,
+    new_name: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let root = state.require()?.root;
+    tauri::async_runtime::spawn_blocking(move || notes::rename_note(&root, &path, &new_name))
+        .await
+        .map_err(|error| format!("Renaming the note failed: {error}"))?
+}
+
+/// Delete one existing note. Folders are never deleted.
+#[tauri::command]
+async fn delete_note(path: String, state: State<'_, AppState>) -> Result<(), String> {
+    let root = state.require()?.root;
+    tauri::async_runtime::spawn_blocking(move || notes::delete_note(&root, &path))
+        .await
+        .map_err(|error| format!("Deleting the note failed: {error}"))?
 }
 
 /// Read one note on demand by its workspace-relative path.
@@ -107,7 +155,11 @@ pub fn run() {
             open_workspace,
             rescan_workspace,
             read_note,
-            save_note
+            save_note,
+            create_folder,
+            create_note,
+            rename_note,
+            delete_note
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
