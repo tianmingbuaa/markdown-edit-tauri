@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f7f4ee" />
+    <title>墨笺 · Markdown</title>
+    <script>
+      (() => {
+        try {
+          const saved = localStorage.getItem("mojian.theme");
+          const dark =
+            saved === "dark" ||
+            (saved !== "light" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.dataset.theme = dark ? "dark" : "light";
+        } catch (_) {
+          /* localStorage can be unavailable in hardened webviews */
+        }
+      })();
+    </script>
+  </head>
+
+  <body>
+    <div id="app" class="app" data-ready="false">
+      <aside id="sidebar" class="sidebar" aria-label="笔记库">
+        <div class="sidebar__head">
+          <div class="brand" aria-label="墨笺">
+            <span class="brand__mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" fill="none">
+                <rect width="32" height="32" rx="9" fill="currentColor" />
+                <path
+                  d="M9.5 9.8h11.2a1 1 0 0 1 1 1v11.4h-10a2.2 2.2 0 0 1-2.2-2.2V9.8Z"
+                  fill="#f7f0e3"
+                />
+                <path d="M13 13.6h5.4M13 17.1h5.4" stroke="#b85538" stroke-width="1.7" stroke-linecap="round" />
+                <path d="M23.2 22.2h3.1" stroke="#d97957" stroke-width="1.7" stroke-linecap="round" />
+              </svg>
+            </span>
+            <span class="brand__type">
+              <span class="brand__name">墨笺</span>
+              <span class="brand__latin">MOJIAN</span>
+            </span>
+          </div>
+          <button
+            id="collapse-sidebar"
+            class="icon-btn icon-btn--quiet"
+            type="button"
+            aria-label="收起侧边栏"
+            title="收起侧边栏 (Ctrl + \)"
+          ></button>
+        </div>
+
+        <section id="workspace-card" class="workspace-card" data-empty="true">
+          <span class="workspace-card__icon" data-icon="library"></span>
+          <span class="workspace-card__body">
+            <span id="workspace-name-side" class="workspace-card__name">尚未打开笔记库</span>
+            <span id="workspace-path-side" class="workspace-card__path">选择一个本地文件夹</span>
+          </span>
+          <button
+            id="open-workspace-side"
+            class="icon-btn icon-btn--small"
+            type="button"
+            aria-label="打开笔记库"
+            title="打开笔记库"
+            data-icon="folder-plus"
+          ></button>
+        </section>
+
+        <div class="library-head">
+          <span class="library-head__title">笔记</span>
+          <span id="note-count" class="count-pill">0</span>
+          <button
+            id="refresh-workspace"
+            class="icon-btn icon-btn--small icon-btn--quiet library-head__refresh"
+            type="button"
+            aria-label="刷新笔记库"
+            title="刷新笔记库"
+            data-icon="refresh"
+          ></button>
+        </div>
+
+        <label class="search-box" for="file-search">
+          <span class="search-box__icon" data-icon="search"></span>
+          <input
+            id="file-search"
+            class="search-box__input"
+            type="search"
+            placeholder="搜索笔记…"
+            autocomplete="off"
+            spellcheck="false"
+            aria-label="搜索笔记"
+          />
+          <kbd id="search-kbd" class="search-box__kbd">Ctrl P</kbd>
+          <button
+            id="clear-search"
+            class="search-box__clear"
+            type="button"
+            aria-label="清除搜索"
+            hidden
+            data-icon="x"
+          ></button>
+        </label>
+
+        <nav id="file-tree" class="file-tree" aria-label="笔记列表">
+          <div class="tree-empty">
+            <span class="tree-empty__icon" data-icon="book-open"></span>
+            <span>打开一个文件夹<br />建立你的笔记库</span>
+          </div>
+        </nav>
+
+        <footer class="sidebar__footer">
+          <div class="autosave-indicator">
+            <span class="autosave-indicator__dot"></span>
+            <span id="sidebar-save-message">自动保存已开启</span>
+          </div>
+          <div class="sidebar__footer-actions">
+            <button
+              id="theme-toggle"
+              class="footer-btn"
+              type="button"
+              aria-label="切换主题"
+              title="切换主题"
+            >
+              <span class="icon-slot" data-icon="moon"></span>
+              <span id="theme-label">深色</span>
+            </button>
+            <span class="footer-sep" aria-hidden="true"></span>
+            <button
+              id="shortcut-help"
+              class="footer-btn footer-btn--icon"
+              type="button"
+              aria-label="查看快捷键"
+              title="查看快捷键"
+            >
+              <span class="icon-slot" data-icon="keyboard"></span>
+            </button>
+          </div>
+        </footer>
+      </aside>
+
+      <div
+        id="sidebar-resizer"
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="调整侧边栏宽度"
+        tabindex="0"
+      ></div>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar__left">
+            <button
+              id="sidebar-toggle"
+              class="icon-btn"
+              type="button"
+              aria-label="切换侧边栏"
+              title="切换侧边栏 (Ctrl + \)"
+              data-icon="panel-left"
+            ></button>
+            <div class="breadcrumb" aria-label="当前位置">
+              <span id="breadcrumb-workspace" class="breadcrumb__muted">墨笺</span>
+              <span class="breadcrumb__sep" aria-hidden="true">/</span>
+              <span id="breadcrumb-note" class="breadcrumb__current">未选择笔记</span>
+              <span id="dirty-dot" class="dirty-dot" aria-label="有未保存的修改" hidden></span>
+            </div>
+          </div>
+
+          <div class="topbar__right">
+            <button
+              id="save-status"
+              class="save-status"
+              type="button"
+              data-state="idle"
+              aria-live="polite"
+              title="立即保存 (Ctrl + S)"
+            >
+              <span class="save-status__dot"></span>
+              <span id="save-status-text" class="save-status__text">未选择笔记</span>
+              <span id="save-status-time" class="save-status__time"></span>
+            </button>
+            <span class="topbar__rule" aria-hidden="true"></span>
+            <button
+              id="open-workspace-top"
+              class="topbar-action"
+              type="button"
+              title="打开笔记库 (Ctrl + O)"
+            >
+              <span class="icon-slot" data-icon="folder"></span>
+              <span>打开笔记库</span>
+            </button>
+            <button
+              id="theme-toggle-top"
+              class="icon-btn"
+              type="button"
+              aria-label="切换主题"
+              title="切换主题"
+              data-icon="moon"
+            ></button>
+          </div>
+        </header>
+
+        <div class="viewport">
+          <section id="welcome" class="welcome" aria-labelledby="welcome-title">
+            <div class="welcome__glow welcome__glow--one" aria-hidden="true"></div>
+            <div class="welcome__glow welcome__glow--two" aria-hidden="true"></div>
+
+            <div class="welcome__content">
+              <p id="welcome-eyebrow" class="welcome__eyebrow">
+                <span class="welcome__eyebrow-rule" aria-hidden="true"></span>
+                MOJIAN · MARKDOWN STUDIO
+              </p>
+              <h1 id="welcome-title" class="welcome__title">
+                把思绪，<br /><em>写进纸间。</em>
+              </h1>
+              <p id="welcome-description" class="welcome__description">
+                打开一个本地文件夹，把它变成你的 Markdown 笔记库。
+                选择、书写，余下的一切交给自动保存。
+              </p>
+
+              <div class="welcome__actions">
+                <button id="open-workspace-hero" class="button button--primary" type="button">
+                  <span class="icon-slot" data-icon="folder-plus"></span>
+                  <span>打开笔记库</span>
+                  <span class="button__arrow" data-icon="arrow-up-right"></span>
+                </button>
+                <button id="refresh-hero" class="button button--ghost" type="button" hidden>
+                  <span class="icon-slot" data-icon="refresh"></span>
+                  <span>刷新笔记库</span>
+                </button>
+              </div>
+
+              <div id="recent-section" class="recent" hidden>
+                <div class="recent__head">
+                  <span>最近打开</span>
+                  <span class="recent__rule" aria-hidden="true"></span>
+                </div>
+                <div id="recent-list" class="recent__list"></div>
+              </div>
+
+              <div id="welcome-hints" class="welcome__hints">
+                <span class="hint"><kbd data-shortcut="open-folder">Ctrl O</kbd> 打开笔记库</span>
+                <span class="hint"><kbd data-shortcut="search">Ctrl P</kbd> 搜索笔记</span>
+                <span class="hint"><kbd data-shortcut="save">Ctrl S</kbd> 手动保存</span>
+              </div>
+            </div>
+
+            <div class="welcome__art" aria-hidden="true">
+              <svg class="hero-art" viewBox="0 0 520 520" fill="none">
+                <defs>
+                  <radialGradient id="hero-halo" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(270 250) rotate(90) scale(210)">
+                    <stop stop-color="#c86443" stop-opacity=".2" />
+                    <stop offset="1" stop-color="#c86443" stop-opacity="0" />
+                  </radialGradient>
+                  <linearGradient id="hero-paper" x1="190" y1="135" x2="375" y2="420" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#fffdf8" />
+                    <stop offset="1" stop-color="#f3ead9" />
+                  </linearGradient>
+                  <linearGradient id="hero-sheet" x1="170" y1="140" x2="340" y2="400" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#eadfca" />
+                    <stop offset="1" stop-color="#d9c9ad" />
+                  </linearGradient>
+                  <linearGradient id="hero-seal" x1="344" y1="332" x2="420" y2="420" gradientUnits="userSpaceOnUse">
+                    <stop stop-color="#d87351" />
+                    <stop offset="1" stop-color="#af4a2c" />
+                  </linearGradient>
+                  <filter id="hero-shadow" x="80" y="70" width="380" height="450" filterUnits="userSpaceOnUse">
+                    <feDropShadow dx="0" dy="22" stdDeviation="20" flood-color="#3b2a1c" flood-opacity=".18" />
+                  </filter>
+                </defs>
+
+                <circle cx="275" cy="255" r="205" fill="url(#hero-halo)" />
+                <circle class="hero-art__orbit" cx="276" cy="256" r="190" stroke="#ad9c83" stroke-opacity=".28" stroke-dasharray="2 10" />
+                <circle class="hero-art__orbit hero-art__orbit--inner" cx="276" cy="256" r="146" stroke="#ad9c83" stroke-opacity=".2" stroke-dasharray="1 12" />
+
+                <path class="hero-art__spark hero-art__spark--one" d="M407 136v16M399 144h16" stroke="#b85538" stroke-width="1.8" stroke-linecap="round" />
+                <path class="hero-art__spark hero-art__spark--two" d="M112 318v11M106.5 323.5h11" stroke="#b85538" stroke-width="1.6" stroke-linecap="round" />
+                <circle class="hero-art__spark hero-art__spark--three" cx="426" cy="308" r="3.5" fill="#b85538" fill-opacity=".7" />
+
+                <g class="hero-art__sheet hero-art__sheet--back" filter="url(#hero-shadow)">
+                  <rect x="158" y="124" width="236" height="324" rx="20" fill="url(#hero-sheet)" transform="rotate(-9 276 286)" />
+                </g>
+                <g class="hero-art__sheet hero-art__sheet--front" filter="url(#hero-shadow)">
+                  <rect x="182" y="112" width="238" height="328" rx="20" fill="url(#hero-paper)" transform="rotate(5 301 276)" />
+                  <path d="M339 112h47a20 20 0 0 1 20 20v49l-67-69Z" fill="#eadfca" transform="rotate(5 301 276)" />
+                  <g transform="rotate(5 301 276)">
+                    <rect x="224" y="172" width="54" height="8" rx="4" fill="#b85538" />
+                    <rect x="224" y="206" width="142" height="7" rx="3.5" fill="#3a332b" fill-opacity=".72" />
+                    <rect x="224" y="230" width="118" height="7" rx="3.5" fill="#3a332b" fill-opacity=".4" />
+                    <rect x="224" y="254" width="137" height="7" rx="3.5" fill="#3a332b" fill-opacity=".28" />
+                    <rect x="224" y="278" width="94" height="7" rx="3.5" fill="#3a332b" fill-opacity=".28" />
+                    <path d="M223 344c34-28 62 7 97-18 20-14 40-10 53-3" stroke="#b85538" stroke-width="12" stroke-linecap="round" stroke-opacity=".8" />
+                    <path d="M224 376h82" stroke="#3a332b" stroke-opacity=".16" stroke-width="5" stroke-linecap="round" />
+                  </g>
+                </g>
+
+                <g class="hero-art__seal">
+                  <rect x="345" y="329" width="68" height="108" rx="15" fill="url(#hero-seal)" />
+                  <path d="M379 348v66" stroke="#f9ecde" stroke-width="4" stroke-linecap="round" stroke-opacity=".72" />
+                  <path d="M379 348l-38-13M379 370l30-15" stroke="#f9ecde" stroke-width="3" stroke-linecap="round" stroke-opacity=".38" />
+                </g>
+
+                <g class="hero-art__tag">
+                  <rect x="108" y="132" width="88" height="34" rx="17" fill="#fcf8f0" stroke="#d8cbb8" />
+                  <text x="152" y="154" text-anchor="middle" fill="#6f6353" font-family="Manrope Variable, sans-serif" font-size="12" font-weight="650" letter-spacing="1.5"># NOTE</text>
+                </g>
+              </svg>
+            </div>
+          </section>
+
+          <section id="editor-view" class="editor-view" hidden>
+            <div id="editor-loading" class="editor-loading" aria-live="polite">
+              <span class="spinner"></span>
+              <span>正在载入笔记…</span>
+            </div>
+
+            <header class="doc-head">
+              <div class="doc-head__text">
+                <h1 id="document-title" class="doc-head__title">未命名笔记</h1>
+                <p class="doc-head__meta">
+                  <span id="document-path">笔记库</span>
+                  <span class="doc-head__dot" aria-hidden="true">·</span>
+                  <span id="document-updated">刚刚更新</span>
+                </p>
+              </div>
+              <div class="doc-head__aside">
+                <span id="doc-reading-time" class="reading-time">约 1 分钟</span>
+              </div>
+            </header>
+
+            <div class="editor-frame">
+              <div id="vditor" class="editor-mount"></div>
+            </div>
+
+            <footer class="editor-footer">
+              <div class="editor-footer__left">
+                <span id="word-count">0 字符</span>
+                <span class="editor-footer__dot" aria-hidden="true"></span>
+                <span id="read-time">约 1 分钟阅读</span>
+              </div>
+              <div class="editor-footer__center">
+                <span class="mode-badge"><span class="mode-badge__dot"></span> IR · 即时渲染</span>
+              </div>
+              <div class="editor-footer__right">
+                <span class="shortcut-chip"><kbd>Ctrl</kbd><kbd>S</kbd> 保存</span>
+              </div>
+            </footer>
+          </section>
+        </div>
+      </main>
+
+      <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
+    </div>
+
+    <dialog id="shortcuts-dialog" class="shortcut-dialog">
+      <div class="shortcut-dialog__head">
+        <div>
+          <p class="shortcut-dialog__eyebrow">KEYBOARD</p>
+          <h2>快捷键</h2>
+        </div>
+        <button
+          id="close-shortcuts"
+          class="icon-btn"
+          type="button"
+          aria-label="关闭快捷键面板"
+          data-icon="x"
+        ></button>
+      </div>
+      <div class="shortcut-grid">
+        <span>打开笔记库</span><span><kbd data-shortcut="open-folder">Ctrl O</kbd></span>
+        <span>搜索笔记</span><span><kbd data-shortcut="search">Ctrl P</kbd></span>
+        <span>立即保存</span><span><kbd data-shortcut="save">Ctrl S</kbd></span>
+        <span>显示 / 隐藏侧边栏</span><span><kbd data-shortcut="sidebar">Ctrl \</kbd></span>
+        <span>切换主题</span><span><kbd data-shortcut="theme">Ctrl ⇧ L</kbd></span>
+        <span>加粗 / 斜体</span><span><kbd>Ctrl B</kbd> <kbd>Ctrl I</kbd></span>
+      </div>
+      <p class="shortcut-dialog__note">编辑内容会自动保存，无需担心丢失。</p>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
