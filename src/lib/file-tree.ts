@@ -21,34 +21,42 @@ export interface FolderNode {
 
 export type TreeNode = FileNode | FolderNode;
 
-export function buildFileTree(notes: NoteEntry[]): FolderNode {
+export function buildFileTree(notes: NoteEntry[], folderPaths: string[] = []): FolderNode {
   const root: FolderNode = { type: "folder", name: "", path: "", children: [] };
   const folders = new Map<string, FolderNode>();
 
-  for (const note of notes) {
-    const parts = note.path.split("/").filter(Boolean);
-    if (parts.length === 0) continue;
-
-    let children = root.children;
+  const ensureFolder = (path: string): FolderNode => {
+    if (!path) return root;
+    const parts = path.split("/").filter(Boolean);
+    let parent = root;
     let currentPath = "";
 
-    for (let index = 0; index < parts.length - 1; index += 1) {
-      currentPath = currentPath ? `${currentPath}/${parts[index]}` : parts[index];
+    for (const part of parts) {
+      currentPath = currentPath ? `${currentPath}/${part}` : part;
       let folder = folders.get(currentPath);
       if (!folder) {
         folder = {
           type: "folder",
-          name: parts[index],
+          name: part,
           path: currentPath,
           children: [],
         };
         folders.set(currentPath, folder);
-        children.push(folder);
+        parent.children.push(folder);
       }
-      children = folder.children;
+      parent = folder;
     }
+    return parent;
+  };
 
-    children.push({
+  // Directories are known even when they are empty, which is how freshly
+  // created folders remain visible before they contain a note.
+  for (const path of folderPaths) ensureFolder(path);
+
+  for (const note of notes) {
+    const parentPath = parentDirectory(note.path);
+    const parent = ensureFolder(parentPath);
+    parent.children.push({
       type: "file",
       name: note.name,
       path: note.path,

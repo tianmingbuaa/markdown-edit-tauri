@@ -71,14 +71,26 @@
         <div class="library-head">
           <span class="library-head__title">笔记</span>
           <span id="note-count" class="count-pill">0</span>
-          <button
-            id="refresh-workspace"
-            class="icon-btn icon-btn--small icon-btn--quiet library-head__refresh"
-            type="button"
-            aria-label="刷新笔记库"
-            title="刷新笔记库"
-            data-icon="refresh"
-          ></button>
+          <span class="library-head__actions">
+            <button
+              id="create-entry"
+              class="icon-btn icon-btn--small library-head__create"
+              type="button"
+              aria-label="新建笔记或文件夹"
+              title="新建笔记或文件夹 (Ctrl + N)"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              data-icon="plus"
+            ></button>
+            <button
+              id="refresh-workspace"
+              class="icon-btn icon-btn--small icon-btn--quiet library-head__refresh"
+              type="button"
+              aria-label="刷新笔记库"
+              title="刷新笔记库"
+              data-icon="refresh"
+            ></button>
+          </span>
         </div>
 
         <label class="search-box" for="file-search">
@@ -327,6 +339,24 @@
               </div>
               <div class="doc-head__aside">
                 <span id="doc-reading-time" class="reading-time">约 1 分钟</span>
+                <span class="doc-head__actions">
+                  <button
+                    id="rename-note"
+                    class="doc-action"
+                    type="button"
+                    aria-label="重命名当前笔记"
+                    title="重命名当前笔记 (F2)"
+                    data-icon="pencil"
+                  ></button>
+                  <button
+                    id="delete-note"
+                    class="doc-action doc-action--danger"
+                    type="button"
+                    aria-label="删除当前笔记"
+                    title="删除当前笔记"
+                    data-icon="trash"
+                  ></button>
+                </span>
               </div>
             </header>
 
@@ -354,6 +384,8 @@
       <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="false"></div>
     </div>
 
+    <div id="context-menu" class="context-menu" role="menu" aria-label="笔记操作" hidden></div>
+
     <dialog id="shortcuts-dialog" class="shortcut-dialog">
       <div class="shortcut-dialog__head">
         <div>
@@ -372,11 +404,79 @@
         <span>打开笔记库</span><span><kbd data-shortcut="open-folder">Ctrl O</kbd></span>
         <span>搜索笔记</span><span><kbd data-shortcut="search">Ctrl P</kbd></span>
         <span>立即保存</span><span><kbd data-shortcut="save">Ctrl S</kbd></span>
+        <span>新建笔记</span><span><kbd data-shortcut="new-note">Ctrl N</kbd></span>
+        <span>新建文件夹</span><span><kbd data-shortcut="new-folder">Ctrl ⇧ N</kbd></span>
+        <span>重命名当前笔记</span><span><kbd data-shortcut="rename-note">F2</kbd></span>
         <span>显示 / 隐藏侧边栏</span><span><kbd data-shortcut="sidebar">Ctrl \</kbd></span>
         <span>切换主题</span><span><kbd data-shortcut="theme">Ctrl ⇧ L</kbd></span>
         <span>加粗 / 斜体</span><span><kbd>Ctrl B</kbd> <kbd>Ctrl I</kbd></span>
       </div>
       <p class="shortcut-dialog__note">编辑内容会自动保存，无需担心丢失。</p>
+    </dialog>
+
+    <dialog id="entry-dialog" class="entry-dialog" aria-labelledby="entry-title">
+      <form id="entry-form" class="entry-dialog__form" novalidate>
+        <div class="entry-dialog__head">
+          <div>
+            <p id="entry-eyebrow" class="entry-dialog__eyebrow">NEW NOTE</p>
+            <h2 id="entry-title">新建笔记</h2>
+          </div>
+          <button
+            id="entry-close"
+            class="icon-btn"
+            type="button"
+            aria-label="关闭"
+            data-icon="x"
+          ></button>
+        </div>
+        <p id="entry-description" class="entry-dialog__description"></p>
+        <label class="name-field" for="entry-input">
+          <span class="name-field__label">名称</span>
+          <span class="name-field__control">
+            <input
+              id="entry-input"
+              class="name-field__input"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              maxlength="80"
+              aria-describedby="entry-error"
+            />
+            <span id="entry-suffix" class="name-field__suffix">.md</span>
+          </span>
+        </label>
+        <p id="entry-error" class="field-error" role="alert"></p>
+        <div class="entry-dialog__actions">
+          <button id="entry-cancel" class="dialog-btn" type="button">取消</button>
+          <button id="entry-confirm" class="dialog-btn dialog-btn--primary" type="submit">
+            创建
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-dialog" class="delete-dialog" aria-labelledby="delete-title">
+      <div class="delete-dialog__body">
+        <div class="delete-dialog__head">
+          <span class="delete-dialog__icon" data-icon="trash"></span>
+          <div>
+            <p class="delete-dialog__eyebrow">DELETE NOTE</p>
+            <h2 id="delete-title">删除这篇笔记？</h2>
+          </div>
+        </div>
+        <p id="delete-description" class="delete-dialog__description"></p>
+        <div class="delete-dialog__path">
+          <span class="delete-dialog__path-icon" data-icon="file-text"></span>
+          <span id="delete-path"></span>
+        </div>
+        <p id="delete-error" class="field-error" role="alert"></p>
+        <div class="entry-dialog__actions">
+          <button id="delete-cancel" class="dialog-btn" type="button">取消</button>
+          <button id="delete-confirm" class="dialog-btn dialog-btn--danger" type="button">
+            删除笔记
+          </button>
+        </div>
+      </div>
     </dialog>
 
     <script type="module" src="/src/main.ts"></script>

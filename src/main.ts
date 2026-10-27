@@ -14,6 +14,7 @@ import {
   buildFileTree,
   countNotes,
   folderAncestors,
+  parentDirectory,
   searchNotes,
 } from "./lib/file-tree";
 import type { FileNode, FolderNode } from "./lib/file-tree";
@@ -27,11 +28,21 @@ import {
 } from "./lib/format";
 import type { ReadingStats } from "./lib/format";
 import { hydrateIcons, iconSvg, setIcon } from "./icons";
+import type { IconName } from "./icons";
 import { storage } from "./lib/storage";
 import "./styles.css";
 
 type SaveState = "idle" | "pending" | "saving" | "saved" | "error";
 type ToastKind = "info" | "success" | "error";
+type EntryDialogMode = "new-note" | "new-folder" | "rename-note";
+
+interface ActionMenuItem {
+  id: "new-note" | "new-folder" | "rename-note" | "delete-note";
+  label: string;
+  icon: IconName;
+  shortcut?: string;
+  danger?: boolean;
+}
 
 interface ToastOptions {
   kind: ToastKind;
@@ -63,6 +74,27 @@ class MojianApp {
   private openWorkspaceHero!: HTMLButtonElement;
   private refreshWorkspaceButton!: HTMLButtonElement;
   private refreshHero!: HTMLButtonElement;
+  private createEntryButton!: HTMLButtonElement;
+  private renameNoteButton!: HTMLButtonElement;
+  private deleteNoteButton!: HTMLButtonElement;
+  private contextMenu!: HTMLElement;
+  private entryDialog!: HTMLDialogElement;
+  private entryForm!: HTMLFormElement;
+  private entryEyebrow!: HTMLElement;
+  private entryTitle!: HTMLElement;
+  private entryDescription!: HTMLElement;
+  private entryInput!: HTMLInputElement;
+  private entrySuffix!: HTMLElement;
+  private entryError!: HTMLElement;
+  private entryConfirm!: HTMLButtonElement;
+  private entryCancel!: HTMLButtonElement;
+  private entryClose!: HTMLButtonElement;
+  private deleteDialog!: HTMLDialogElement;
+  private deleteDescription!: HTMLElement;
+  private deletePath!: HTMLElement;
+  private deleteError!: HTMLElement;
+  private deleteConfirm!: HTMLButtonElement;
+  private deleteCancel!: HTMLButtonElement;
   private themeToggle!: HTMLButtonElement;
   private themeToggleTop!: HTMLButtonElement;
   private themeLabel!: HTMLElement;
@@ -123,6 +155,15 @@ class MojianApp {
   private lastSaveErrorMessage = "";
   private lastErrorToastAt = 0;
 
+  private entryMode: EntryDialogMode | null = null;
+  private entryParent = "";
+  private entryNote: NoteEntry | null = null;
+  private entryExtension = ".md";
+  private entryBusy = false;
+  private deleteTarget: NoteEntry | null = null;
+  private deleteBusy = false;
+  private contextMenuAnchor: HTMLElement | null = null;
+
   private dark = false;
   private sidebarCollapsed = false;
   private workspaceBusy = false;
@@ -169,6 +210,27 @@ class MojianApp {
     this.openWorkspaceHero = byId<HTMLButtonElement>("open-workspace-hero");
     this.refreshWorkspaceButton = byId<HTMLButtonElement>("refresh-workspace");
     this.refreshHero = byId<HTMLButtonElement>("refresh-hero");
+    this.createEntryButton = byId<HTMLButtonElement>("create-entry");
+    this.renameNoteButton = byId<HTMLButtonElement>("rename-note");
+    this.deleteNoteButton = byId<HTMLButtonElement>("delete-note");
+    this.contextMenu = byId<HTMLElement>("context-menu");
+    this.entryDialog = byId<HTMLDialogElement>("entry-dialog");
+    this.entryForm = byId<HTMLFormElement>("entry-form");
+    this.entryEyebrow = byId<HTMLElement>("entry-eyebrow");
+    this.entryTitle = byId<HTMLElement>("entry-title");
+    this.entryDescription = byId<HTMLElement>("entry-description");
+    this.entryInput = byId<HTMLInputElement>("entry-input");
+    this.entrySuffix = byId<HTMLElement>("entry-suffix");
+    this.entryError = byId<HTMLElement>("entry-error");
+    this.entryConfirm = byId<HTMLButtonElement>("entry-confirm");
+    this.entryCancel = byId<HTMLButtonElement>("entry-cancel");
+    this.entryClose = byId<HTMLButtonElement>("entry-close");
+    this.deleteDialog = byId<HTMLDialogElement>("delete-dialog");
+    this.deleteDescription = byId<HTMLElement>("delete-description");
+    this.deletePath = byId<HTMLElement>("delete-path");
+    this.deleteError = byId<HTMLElement>("delete-error");
+    this.deleteConfirm = byId<HTMLButtonElement>("delete-confirm");
+    this.deleteCancel = byId<HTMLButtonElement>("delete-cancel");
     this.themeToggle = byId<HTMLButtonElement>("theme-toggle");
     this.themeToggleTop = byId<HTMLButtonElement>("theme-toggle-top");
     this.themeLabel = byId<HTMLElement>("theme-label");
@@ -218,6 +280,23 @@ class MojianApp {
 
     this.refreshWorkspaceButton.addEventListener("click", () => void this.refreshWorkspace(true));
     this.refreshHero.addEventListener("click", () => void this.refreshWorkspace(true));
+    this.createEntryButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.toggleCreateMenu();
+    });
+    this.renameNoteButton.addEventListener("click", () => {
+      if (this.currentNote) {
+        this.openEntryDialog("rename-note", parentDirectory(this.currentNote.path), this.currentNote);
+      }
+    });
+    this.deleteNoteButton.addEventListener("click", () => {
+      if (this.currentNote) this.openDeleteDialog(this.currentNote);
+    });
+    this.fileTree.addEventListener("contextmenu", (event) => {
+      this.handleTreeContextMenu(event);
+    });
+    this.fileTree.addEventListener("scroll", () => this.closeContextMenu(), { passive: true });
+    window.addEventListener("resize", () => this.closeContextMenu());
 
     this.collapseSidebar.addEventListener("click", () => {
       this.applySidebarCollapsed(true, true);
@@ -269,6 +348,68 @@ class MojianApp {
       if (event.target === this.shortcutDialog) this.shortcutDialog.close();
     });
 
+    this.entryForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      void this.submitEntryDialog();
+    });
+    this.entryInput.addEventListener("input", () => {
+      this.entryError.textContent = "";
+    });
+    this.entryCancel.addEventListener("click", () => this.closeEntryDialog());
+    this.entryClose.addEventListener("click", () => this.closeEntryDialog());
+    this.entryDialog.addEventListener("click", (event) => {
+      if (event.target === this.entryDialog && !this.entryBusy) this.closeEntryDialog();
+    });
+    this.entryDialog.addEventListener("cancel", (event) => {
+      if (this.entryBusy) event.preventDefault();
+    });
+    this.entryDialog.addEventListener("close", () => {
+      if (!this.entryBusy) {
+        this.entryMode = null;
+        this.entryNote = null;
+        this.entryError.textContent = "";
+      }
+    });
+
+    this.deleteCancel.addEventListener("click", () => this.closeDeleteDialog());
+    this.deleteConfirm.addEventListener("click", () => void this.confirmDelete());
+    this.deleteDialog.addEventListener("click", (event) => {
+      if (event.target === this.deleteDialog && !this.deleteBusy) this.closeDeleteDialog();
+    });
+    this.deleteDialog.addEventListener("cancel", (event) => {
+      if (this.deleteBusy) event.preventDefault();
+    });
+    this.deleteDialog.addEventListener("close", () => {
+      if (!this.deleteBusy) {
+        this.deleteTarget = null;
+        this.deleteError.textContent = "";
+      }
+    });
+
+    document.addEventListener("pointerdown", (event) => {
+      if (this.contextMenu.hidden) return;
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (this.contextMenu.contains(target) || this.createEntryButton.contains(target)) return;
+      this.closeContextMenu();
+    });
+
+    this.contextMenu.addEventListener("keydown", (event) => {
+      const items = [...this.contextMenu.querySelectorAll<HTMLButtonElement>(".context-menu__item")];
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        this.closeContextMenu(true);
+        return;
+      }
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (items.length === 0) return;
+        const direction = event.key === "ArrowDown" ? 1 : -1;
+        items[(index + direction + items.length) % items.length].focus();
+      }
+    });
+
     document.addEventListener("click", (event) => {
       const target = event.target;
       const anchor = target instanceof Element ? target.closest("a") : null;
@@ -300,6 +441,28 @@ class MojianApp {
     document.addEventListener(
       "keydown",
       (event) => {
+        if (event.key === "Escape" && !this.contextMenu.hidden) {
+          event.preventDefault();
+          this.closeContextMenu(true);
+          return;
+        }
+
+        const dialogOpen =
+          this.entryDialog.open || this.deleteDialog.open || this.shortcutDialog.open;
+        if (dialogOpen) return;
+
+        if (event.key === "F2") {
+          if (this.currentNote && !this.workspaceBusy) {
+            event.preventDefault();
+            this.openEntryDialog(
+              "rename-note",
+              parentDirectory(this.currentNote.path),
+              this.currentNote,
+            );
+          }
+          return;
+        }
+
         const modifier = event.metaKey || event.ctrlKey;
         if (!modifier || event.altKey) return;
         const key = event.key.toLowerCase();
@@ -322,6 +485,15 @@ class MojianApp {
           }
           this.fileSearch.focus();
           this.fileSearch.select();
+          return;
+        }
+        if (key === "n") {
+          event.preventDefault();
+          if (!this.workspace) {
+            this.showToast({ kind: "info", message: "请先打开一个笔记库。" });
+            return;
+          }
+          this.openEntryDialog(event.shiftKey ? "new-folder" : "new-note", this.defaultParentPath());
           return;
         }
         if (key === "\\") {
@@ -430,6 +602,9 @@ class MojianApp {
       "open-folder": apple ? "⌘ O" : "Ctrl O",
       search: apple ? "⌘ P" : "Ctrl P",
       save: apple ? "⌘ S" : "Ctrl S",
+      "new-note": apple ? "⌘ N" : "Ctrl N",
+      "new-folder": apple ? "⌘ ⇧ N" : "Ctrl ⇧ N",
+      "rename-note": "F2",
       sidebar: apple ? "⌘ \\" : "Ctrl \\",
       theme: apple ? "⌘ ⇧ L" : "Ctrl ⇧ L",
     };
@@ -515,7 +690,7 @@ class MojianApp {
 
   private adoptWorkspace(info: WorkspaceInfo): void {
     this.workspace = info;
-    this.tree = buildFileTree(info.notes);
+    this.tree = buildFileTree(info.notes, info.folders ?? []);
     this.collapsedFolders = storage.getCollapsedFolders(info.path);
     this.currentNote = null;
     this.pendingContent = null;
@@ -554,6 +729,7 @@ class MojianApp {
     if (this.workspace) {
       this.refreshWorkspaceButton.title = busy ? "正在刷新…" : "刷新笔记库";
     }
+    this.updateManagementActions();
   }
 
   private updateWorkspaceChrome(): void {
@@ -571,6 +747,7 @@ class MojianApp {
     this.refreshHero.disabled = this.workspaceBusy || !hasWorkspace;
     this.clearSearchButton.hidden = !this.query;
     this.searchKbd.hidden = Boolean(this.query);
+    this.updateManagementActions();
   }
 
   private updateWelcome(): void {
@@ -594,7 +771,7 @@ class MojianApp {
       this.welcomeEyebrow.innerHTML =
         '<span class="welcome__eyebrow-rule" aria-hidden="true"></span>EMPTY LIBRARY';
       this.welcomeTitle.innerHTML = "这里还是一张<br /><em>空白稿纸。</em>";
-      this.welcomeDescription.textContent = `“${workspace.name}” 中还没有 Markdown 笔记。往文件夹里放入 .md 文件，然后刷新笔记库。`;
+      this.welcomeDescription.textContent = `“${workspace.name}” 中还没有 Markdown 笔记。点击左侧 + 新建第一篇，或把 .md 文件放入文件夹。`;
       return;
     }
 
@@ -663,15 +840,16 @@ class MojianApp {
     }
 
     const total = workspace.notes.length;
+    const folders = workspace.folders ?? [];
     const filtered = searchNotes(workspace.notes, this.query);
     this.noteCount.textContent = this.query ? `${filtered.length} / ${total}` : String(total);
     this.noteCount.classList.toggle("count-pill--filtered", Boolean(this.query));
     this.clearSearchButton.hidden = !this.query;
     this.searchKbd.hidden = Boolean(this.query);
 
-    if (total === 0) {
+    if (total === 0 && folders.length === 0) {
       this.fileTree.replaceChildren(
-        this.buildTreeMessage("file-text", "还没有 Markdown 笔记", "在文件夹中添加 .md 文件后刷新。"),
+        this.buildTreeMessage("file-text", "还没有 Markdown 笔记", "使用左侧 + 新建第一篇笔记。"),
       );
       this.fileTree.scrollTop = scrollTop;
       return;
@@ -751,6 +929,9 @@ class MojianApp {
         const folderIcon = document.createElement("span");
         folderIcon.className = "tree-row__folder-icon";
         folderIcon.innerHTML = iconSvg(expanded ? "folder-open" : "folder", 16);
+        button.dataset.contextKind = "folder";
+        button.dataset.contextPath = child.path;
+        if (child.children.length === 0) button.classList.add("is-empty");
         const label = document.createElement("span");
         label.className = "tree-row__label";
         label.textContent = child.name;
@@ -797,6 +978,8 @@ class MojianApp {
     button.className = `tree-row tree-row--file${active ? " is-active" : ""}`;
     button.style.setProperty("--tree-depth", String(depth));
     button.dataset.notePath = file.path;
+    button.dataset.contextKind = "file";
+    button.dataset.contextPath = file.path;
     button.title = file.path;
     if (active) button.setAttribute("aria-current", "page");
 
@@ -816,6 +999,8 @@ class MojianApp {
     button.type = "button";
     button.className = "tree-row tree-row--search";
     button.dataset.notePath = note.path;
+    button.dataset.contextKind = "file";
+    button.dataset.contextPath = note.path;
     button.title = note.path;
 
     const icon = document.createElement("span");
@@ -1166,6 +1351,7 @@ class MojianApp {
       this.breadcrumbNote.textContent = "未选择笔记";
       this.dirtyDot.hidden = true;
       document.title = "墨笺 · Markdown";
+      this.updateManagementActions();
       return;
     }
 
@@ -1178,6 +1364,7 @@ class MojianApp {
     this.updateUpdatedLabel();
     this.docReadingTime.textContent = readingTimeLabel(this.currentStats);
     document.title = `${note.name} · 墨笺`;
+    this.updateManagementActions();
   }
 
   private showWelcomeView(): void {
@@ -1230,6 +1417,618 @@ class MojianApp {
     if (changed && this.workspace) {
       storage.setCollapsedFolders(this.workspace.path, this.collapsedFolders);
     }
+  }
+
+  private defaultParentPath(): string {
+    return this.currentNote ? parentDirectory(this.currentNote.path) : "";
+  }
+
+  private folderLabel(path: string): string {
+    return path || "笔记库根目录";
+  }
+
+  private noteExtension(note: NoteEntry): string {
+    return /\.markdown$/i.test(note.fileName) ? ".markdown" : ".md";
+  }
+
+  private menuShortcut(action: ActionMenuItem["id"]): string {
+    const apple = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    switch (action) {
+      case "new-note":
+        return apple ? "⌘ N" : "Ctrl N";
+      case "new-folder":
+        return apple ? "⌘ ⇧ N" : "Ctrl ⇧ N";
+      case "rename-note":
+        return "F2";
+      default:
+        return "";
+    }
+  }
+
+  private createActionItems(): ActionMenuItem[] {
+    return [
+      {
+        id: "new-note",
+        label: "新建笔记",
+        icon: "file-plus",
+        shortcut: this.menuShortcut("new-note"),
+      },
+      {
+        id: "new-folder",
+        label: "新建文件夹",
+        icon: "folder-plus",
+        shortcut: this.menuShortcut("new-folder"),
+      },
+    ];
+  }
+
+  private uniqueEntryName(parentPath: string, mode: "new-note" | "new-folder"): string {
+    const base = mode === "new-folder" ? "新建文件夹" : "未命名笔记";
+    const existing = new Set<string>();
+
+    if (mode === "new-folder") {
+      for (const folder of this.workspace?.folders ?? []) {
+        if (parentDirectory(folder) === parentPath) {
+          existing.add((folder.split("/").pop() ?? "").toLocaleLowerCase("zh-Hans-CN"));
+        }
+      }
+    } else {
+      for (const note of this.workspace?.notes ?? []) {
+        if (parentDirectory(note.path) === parentPath) {
+          existing.add(note.name.toLocaleLowerCase("zh-Hans-CN"));
+        }
+      }
+    }
+
+    let index = 1;
+    let candidate = base;
+    while (existing.has(candidate.toLocaleLowerCase("zh-Hans-CN"))) {
+      index += 1;
+      candidate = `${base} ${index}`;
+    }
+    return candidate;
+  }
+
+  private validateEntryName(raw: string, mode: EntryDialogMode): string | null {
+    const name = raw.trim();
+    if (!name) return "名称不能为空。";
+    if (name.length > 80) return "名称过长，请控制在 80 个字符以内。";
+    if (name === "." || name === "..") return "这个名称不可用。";
+    if (name.startsWith(".")) return "名称不能以点号开头。";
+    if (/[\\/]/.test(name)) return "名称中不能包含斜杠。";
+    if (/[\u0000-\u001f<>:"|?*]/.test(name)) return "名称包含不支持的字符。";
+    if (/[. ]$/.test(name)) return "名称不能以空格或点号结尾。";
+
+    const stem = mode === "new-folder" ? name : name.replace(/\.(md|markdown)$/i, "");
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem)) {
+      return "这个名称是系统保留名称，请换一个。";
+    }
+    return null;
+  }
+
+  private showEntryError(message: string): void {
+    this.entryError.textContent = message;
+    if (this.entryDialog.open) {
+      this.entryInput.focus();
+      this.entryInput.select();
+    }
+  }
+
+  private setEntryBusy(busy: boolean): void {
+    this.entryBusy = busy;
+    this.entryInput.disabled = busy;
+    this.entryConfirm.disabled = busy;
+    this.entryCancel.disabled = busy;
+    this.entryClose.disabled = busy;
+    this.entryDialog.setAttribute("aria-busy", String(busy));
+    this.entryConfirm.textContent = busy
+      ? "处理中…"
+      : this.entryMode === "rename-note"
+        ? "重命名"
+        : "创建";
+  }
+
+  private closeEntryDialog(): void {
+    if (this.entryBusy) return;
+    this.entryDialog.close();
+    this.entryMode = null;
+    this.entryNote = null;
+    this.entryError.textContent = "";
+  }
+
+  private openEntryDialog(
+    mode: EntryDialogMode,
+    parentPath: string,
+    note: NoteEntry | null = null,
+  ): void {
+    if (!this.workspace || this.workspaceBusy) return;
+    if (mode === "rename-note" && !note) return;
+
+    this.closeContextMenu();
+    if (this.entryDialog.open) this.entryDialog.close();
+
+    this.entryMode = mode;
+    this.entryParent = parentPath;
+    this.entryNote = note;
+    this.entryExtension = note ? this.noteExtension(note) : ".md";
+    this.entryError.textContent = "";
+    this.setEntryBusy(false);
+
+    const target = this.folderLabel(parentPath);
+    this.entrySuffix.hidden = mode === "new-folder";
+    this.entrySuffix.textContent = this.entryExtension;
+    this.entryInput.disabled = false;
+
+    if (mode === "new-note") {
+      this.entryEyebrow.textContent = "NEW NOTE";
+      this.entryTitle.textContent = "新建笔记";
+      this.entryDescription.textContent = `在「${target}」中创建一篇 Markdown 笔记。`;
+      this.entryInput.value = this.uniqueEntryName(parentPath, "new-note");
+      this.entryInput.placeholder = "为这篇笔记命名";
+      this.entryConfirm.textContent = "创建";
+    } else if (mode === "new-folder") {
+      this.entryEyebrow.textContent = "NEW FOLDER";
+      this.entryTitle.textContent = "新建文件夹";
+      this.entryDescription.textContent = `在「${target}」中创建一个文件夹。`;
+      this.entryInput.value = this.uniqueEntryName(parentPath, "new-folder");
+      this.entryInput.placeholder = "为文件夹命名";
+      this.entryConfirm.textContent = "创建";
+    } else if (note) {
+      this.entryEyebrow.textContent = "RENAME NOTE";
+      this.entryTitle.textContent = "重命名笔记";
+      this.entryDescription.textContent = `将「${note.fileName}」更名，笔记内容不会改变。`;
+      this.entryInput.value = note.name;
+      this.entryInput.placeholder = "输入新的文件名";
+      this.entryConfirm.textContent = "重命名";
+    }
+
+    this.entryDialog.showModal();
+    requestAnimationFrame(() => {
+      this.entryInput.focus();
+      this.entryInput.select();
+    });
+  }
+
+  private async submitEntryDialog(): Promise<void> {
+    const mode = this.entryMode;
+    const workspace = this.workspace;
+    if (!mode || this.entryBusy || !workspace) return;
+
+    const parentPath = this.entryParent;
+    const source = this.entryNote;
+    let base = this.entryInput.value.trim();
+    if (mode !== "new-folder") base = base.replace(/\.(md|markdown)$/i, "").trim();
+
+    const nameError = this.validateEntryName(base, mode);
+    if (nameError) {
+      this.showEntryError(nameError);
+      return;
+    }
+
+    const extension = mode === "new-note" ? ".md" : this.entryExtension;
+    const fileName = mode === "new-folder" ? base : `${base}${extension}`;
+    const targetPath = parentPath ? `${parentPath}/${fileName}` : fileName;
+    const targetKey = targetPath.toLocaleLowerCase("zh-Hans-CN");
+
+    if (mode === "new-folder") {
+      if ((workspace.folders ?? []).some((folder) => folder.toLocaleLowerCase("zh-Hans-CN") === targetKey)) {
+        this.showEntryError("这个文件夹已经存在。");
+        return;
+      }
+    } else if (mode === "rename-note" && source) {
+      if (targetPath === source.path) {
+        this.showEntryError("新名称与当前名称相同。");
+        return;
+      }
+      const conflict = workspace.notes.find(
+        (note) => note.path !== source.path && note.path.toLocaleLowerCase("zh-Hans-CN") === targetKey,
+      );
+      if (conflict) {
+        this.showEntryError("同一目录下已经存在同名笔记。");
+        return;
+      }
+    } else {
+      const conflict = workspace.notes.find(
+        (note) => note.path.toLocaleLowerCase("zh-Hans-CN") === targetKey,
+      );
+      if (conflict) {
+        this.showEntryError("同一目录下已经存在同名笔记。");
+        return;
+      }
+    }
+
+    this.entryError.textContent = "";
+    this.setEntryBusy(true);
+
+    let resultPath = "";
+    try {
+      if (mode === "new-note") {
+        if (!(await this.saveNow(false))) {
+          throw new Error("当前笔记保存失败，请重试后再新建。");
+        }
+        resultPath = await workspaceApi.createNote(parentPath, fileName);
+      } else if (mode === "new-folder") {
+        resultPath = await workspaceApi.createFolder(parentPath, base);
+      } else if (source) {
+        if (this.currentNote?.path === source.path && !(await this.saveNow(false))) {
+          throw new Error("当前笔记保存失败，请重试后再重命名。");
+        }
+        resultPath = await workspaceApi.renameNote(source.path, fileName);
+      }
+    } catch (error) {
+      this.setEntryBusy(false);
+      this.showEntryError(
+        `${mode === "new-folder" ? "新建文件夹" : mode === "new-note" ? "新建笔记" : "重命名"}失败：${errorMessage(error)}`,
+      );
+      return;
+    }
+
+    this.setEntryBusy(false);
+    this.closeEntryDialog();
+
+    if (mode === "new-note") {
+      this.resetSearchQuery();
+      this.expandFolderChain(parentPath);
+      const info = await this.rescanWorkspace(false);
+      if (!info) {
+        this.showToast({
+          kind: "info",
+          message: `笔记「${base}」已创建，请刷新笔记库查看。`,
+        });
+        return;
+      }
+      const entry = info.notes.find((note) => note.path === resultPath);
+      if (!entry) {
+        this.showToast({ kind: "info", message: "笔记已创建，但暂时无法定位它，请刷新笔记库。" });
+        return;
+      }
+      await this.loadNote(entry);
+      this.showToast({ kind: "success", message: `已创建笔记「${base}」` });
+      return;
+    }
+
+    if (mode === "new-folder") {
+      this.resetSearchQuery();
+      this.expandFolderChain(parentPath);
+      const info = await this.rescanWorkspace(false);
+      if (info) this.scrollTreeToPath("folder", resultPath);
+      this.showToast({
+        kind: info ? "success" : "info",
+        message: info ? `已创建文件夹「${base}」` : `文件夹「${base}」已创建，请刷新笔记库查看。`,
+      });
+      return;
+    }
+
+    if (mode === "rename-note" && source) {
+      storage.renameRecent(workspace.path, source.path, { path: resultPath, name: base });
+      const wasCurrent = this.currentNote?.path === source.path;
+      if (wasCurrent) {
+        this.currentNote = {
+          ...source,
+          path: resultPath,
+          name: base,
+          fileName,
+        };
+        this.updateDocumentChrome();
+      }
+
+      const info = await this.rescanWorkspace(false);
+      if (wasCurrent) {
+        this.updateDocumentChrome();
+      } else if (info) {
+        this.scrollTreeToPath("file", resultPath);
+      }
+      this.showToast({
+        kind: info ? "success" : "info",
+        message: info ? `已重命名为「${base}」` : `已重命名为「${base}」，请刷新笔记库查看。`,
+      });
+    }
+  }
+
+  private setDeleteBusy(busy: boolean): void {
+    this.deleteBusy = busy;
+    this.deleteConfirm.disabled = busy;
+    this.deleteCancel.disabled = busy;
+    this.deleteDialog.setAttribute("aria-busy", String(busy));
+    this.deleteConfirm.textContent = busy ? "删除中…" : "删除笔记";
+  }
+
+  private closeDeleteDialog(): void {
+    if (this.deleteBusy) return;
+    this.deleteDialog.close();
+    this.deleteTarget = null;
+    this.deleteError.textContent = "";
+  }
+
+  private openDeleteDialog(note: NoteEntry): void {
+    if (!this.workspace || this.workspaceBusy) return;
+    this.closeContextMenu();
+    this.deleteTarget = note;
+    this.deleteError.textContent = "";
+    this.setDeleteBusy(false);
+    const isCurrent = this.currentNote?.path === note.path;
+    this.deleteDescription.textContent = isCurrent
+      ? "这篇正在编辑的笔记会从磁盘永久删除，编辑区将关闭，未保存的修改也会丢失。"
+      : "这篇笔记会从磁盘永久删除，此操作无法撤销。";
+    this.deletePath.textContent = note.path;
+    this.deleteDialog.showModal();
+    requestAnimationFrame(() => this.deleteCancel.focus());
+  }
+
+  private async confirmDelete(): Promise<void> {
+    const target = this.deleteTarget;
+    const workspace = this.workspace;
+    if (!target || !workspace || this.deleteBusy) return;
+
+    const isCurrent = this.currentNote?.path === target.path;
+    this.deleteError.textContent = "";
+    this.setDeleteBusy(true);
+
+    if (isCurrent) {
+      // Finish any pending write before deleting. Leaving a save in flight
+      // could otherwise recreate the file just after removal.
+      const saved = await this.saveNow(false);
+      if (!saved) {
+        this.setDeleteBusy(false);
+        this.deleteError.textContent = "当前笔记保存失败，删除已取消。请先重试保存。";
+        return;
+      }
+      this.cancelSaveTimer();
+    }
+
+    try {
+      await workspaceApi.deleteNote(target.path);
+    } catch (error) {
+      this.setDeleteBusy(false);
+      this.deleteError.textContent = `删除失败：${errorMessage(error)}`;
+      if (isCurrent && this.pendingContent !== null) {
+        this.setSaveState("pending");
+        this.scheduleSave();
+      }
+      return;
+    }
+
+    this.setDeleteBusy(false);
+    this.deleteDialog.close();
+    this.deleteTarget = null;
+    storage.removeRecent(workspace.path, target.path);
+
+    if (isCurrent) {
+      this.closeCurrentNoteForRemoval();
+    }
+
+    const info = await this.rescanWorkspace(false);
+    this.showToast({
+      kind: info ? "success" : "info",
+      message: info
+        ? `已删除笔记「${target.name}」`
+        : `笔记「${target.name}」已删除，请刷新笔记库查看。`,
+    });
+  }
+
+  private expandFolderChain(folderPath: string): void {
+    if (!folderPath) return;
+    let changed = false;
+    for (const ancestor of folderAncestors(folderPath)) {
+      if (this.collapsedFolders.delete(ancestor)) changed = true;
+    }
+    if (this.collapsedFolders.delete(folderPath)) changed = true;
+    if (changed && this.workspace) {
+      storage.setCollapsedFolders(this.workspace.path, this.collapsedFolders);
+    }
+  }
+
+  private resetSearchQuery(): void {
+    this.query = "";
+    this.fileSearch.value = "";
+    this.clearSearchButton.hidden = true;
+    this.searchKbd.hidden = false;
+  }
+
+  private scrollTreeToPath(kind: "folder" | "file", path: string): void {
+    requestAnimationFrame(() => {
+      const rows = this.fileTree.querySelectorAll<HTMLElement>(`[data-context-kind="${kind}"]`);
+      const row = [...rows].find((item) => item.dataset.contextPath === path);
+      row?.scrollIntoView({ block: "nearest" });
+      if (row) {
+        row.classList.add("is-new-entry");
+        window.setTimeout(() => row.classList.remove("is-new-entry"), 1400);
+      }
+    });
+  }
+
+  private handleTreeContextMenu(event: MouseEvent): void {
+    if (!this.workspace) return;
+    event.preventDefault();
+
+    const row = (event.target as Element | null)?.closest<HTMLElement>("[data-context-kind]");
+    const kind = row?.dataset.contextKind;
+    const path = row?.dataset.contextPath;
+
+    if (kind === "file" && path) {
+      const note = this.workspace.notes.find((item) => item.path === path);
+      if (note) {
+        this.openFileActions(event.clientX, event.clientY, note);
+        return;
+      }
+    }
+    if (kind === "folder" && path) {
+      this.openFolderActions(event.clientX, event.clientY, path);
+      return;
+    }
+    this.openFolderActions(event.clientX, event.clientY, "");
+  }
+
+  private openFileActions(x: number, y: number, note: NoteEntry): void {
+    const parentPath = parentDirectory(note.path);
+    const items: Array<ActionMenuItem | null> = [
+      ...this.createActionItems(),
+      null,
+      {
+        id: "rename-note",
+        label: "重命名笔记",
+        icon: "pencil",
+        shortcut: this.menuShortcut("rename-note"),
+      },
+      { id: "delete-note", label: "删除笔记", icon: "trash", danger: true },
+    ];
+
+    this.showActionMenu({
+      x,
+      y,
+      eyebrow: "NOTE",
+      targetLabel: note.path,
+      items,
+      onSelect: (action) => {
+        if (action === "new-note" || action === "new-folder") {
+          this.openEntryDialog(action, parentPath);
+        } else if (action === "rename-note") {
+          this.openEntryDialog("rename-note", parentPath, note);
+        } else if (action === "delete-note") {
+          this.openDeleteDialog(note);
+        }
+      },
+    });
+  }
+
+  private openFolderActions(x: number, y: number, folderPath: string): void {
+    this.showActionMenu({
+      x,
+      y,
+      eyebrow: "FOLDER",
+      targetLabel: this.folderLabel(folderPath),
+      items: this.createActionItems(),
+      onSelect: (action) => {
+        if (action === "new-note" || action === "new-folder") {
+          this.openEntryDialog(action, folderPath);
+        }
+      },
+    });
+  }
+
+  private toggleCreateMenu(): void {
+    if (!this.workspace || this.workspaceBusy) return;
+    if (!this.contextMenu.hidden && this.contextMenuAnchor === this.createEntryButton) {
+      this.closeContextMenu();
+      return;
+    }
+
+    const parentPath = this.defaultParentPath();
+    const rect = this.createEntryButton.getBoundingClientRect();
+    this.showActionMenu({
+      x: rect.left,
+      y: rect.bottom + 5,
+      anchor: this.createEntryButton,
+      eyebrow: "NEW IN",
+      targetLabel: this.folderLabel(parentPath),
+      items: this.createActionItems(),
+      onSelect: (action) => {
+        if (action === "new-note" || action === "new-folder") {
+          this.openEntryDialog(action, parentPath);
+        }
+      },
+    });
+  }
+
+  private showActionMenu(options: {
+    x: number;
+    y: number;
+    anchor?: HTMLElement;
+    eyebrow: string;
+    targetLabel: string;
+    items: Array<ActionMenuItem | null>;
+    onSelect: (action: ActionMenuItem["id"]) => void;
+  }): void {
+    this.closeContextMenu();
+    this.contextMenu.replaceChildren();
+
+    const head = document.createElement("div");
+    head.className = "context-menu__head";
+    const eyebrow = document.createElement("span");
+    eyebrow.className = "context-menu__eyebrow";
+    eyebrow.textContent = options.eyebrow;
+    const target = document.createElement("span");
+    target.className = "context-menu__target";
+    target.textContent = options.targetLabel;
+    head.append(eyebrow, target);
+    this.contextMenu.append(head);
+
+    for (const item of options.items) {
+      if (!item) {
+        const separator = document.createElement("div");
+        separator.className = "context-menu__separator";
+        this.contextMenu.append(separator);
+        continue;
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `context-menu__item${item.danger ? " context-menu__item--danger" : ""}`;
+      button.setAttribute("role", "menuitem");
+
+      const icon = document.createElement("span");
+      icon.className = "context-menu__item-icon";
+      icon.innerHTML = iconSvg(item.icon, 16);
+
+      const label = document.createElement("span");
+      label.textContent = item.label;
+
+      const shortcut = document.createElement("span");
+      shortcut.className = "context-menu__shortcut";
+      shortcut.textContent = item.shortcut ?? "";
+
+      button.append(icon, label, shortcut);
+      button.addEventListener("click", () => {
+        this.closeContextMenu();
+        options.onSelect(item.id);
+      });
+      this.contextMenu.append(button);
+    }
+
+    this.contextMenu.hidden = false;
+    if (options.anchor) {
+      this.contextMenuAnchor = options.anchor;
+      if (options.anchor === this.createEntryButton) {
+        this.createEntryButton.setAttribute("aria-expanded", "true");
+        this.createEntryButton.classList.add("is-menu-open");
+      }
+    }
+
+    const rect = this.contextMenu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(options.x, window.innerWidth - rect.width - 8));
+    const top =
+      options.y + rect.height > window.innerHeight - 8
+        ? Math.max(8, options.y - rect.height - 6)
+        : options.y;
+    this.contextMenu.style.left = `${Math.round(left)}px`;
+    this.contextMenu.style.top = `${Math.round(top)}px`;
+
+    requestAnimationFrame(() => {
+      this.contextMenu.querySelector<HTMLButtonElement>(".context-menu__item")?.focus();
+    });
+  }
+
+  private closeContextMenu(restoreFocus = false): void {
+    if (this.contextMenu.hidden) return;
+    const anchor = this.contextMenuAnchor;
+    this.contextMenu.hidden = true;
+    this.contextMenu.replaceChildren();
+    this.contextMenuAnchor = null;
+    if (anchor) {
+      anchor.classList.remove("is-menu-open");
+      if (anchor === this.createEntryButton) {
+        this.createEntryButton.setAttribute("aria-expanded", "false");
+      }
+    }
+    if (restoreFocus) anchor?.focus();
+  }
+
+  private updateManagementActions(): void {
+    const disabled = this.workspaceBusy || !this.workspace;
+    this.createEntryButton.disabled = disabled;
+    const noteDisabled = disabled || !this.currentNote;
+    this.renameNoteButton.disabled = noteDisabled;
+    this.deleteNoteButton.disabled = noteDisabled;
+    if (disabled) this.closeContextMenu();
   }
 
   private async openWorkspaceDialog(): Promise<void> {
@@ -1303,46 +2102,24 @@ class MojianApp {
       });
       return;
     }
+    await this.rescanWorkspace(showFeedback);
+  }
 
-    this.setWorkspaceBusy(true);
+  private async rescanWorkspace(showFeedback: boolean): Promise<WorkspaceInfo | null> {
+    if (!this.workspace || this.workspaceBusy) return null;
     const previousPath = this.currentNote?.path ?? null;
+    this.setWorkspaceBusy(true);
+
     try {
       const info = await workspaceApi.rescan();
-      this.workspace = info;
-      this.tree = buildFileTree(info.notes);
-      const freshCurrent = previousPath
-        ? (info.notes.find((note) => note.path === previousPath) ?? null)
-        : null;
-
-      if (previousPath && !freshCurrent) {
-        this.currentNote = null;
-        this.loadToken += 1;
-        this.editorToken += 1;
-        this.destroyEditor();
-        this.setSaveState("idle");
-        this.setDirtyDot(false);
-        this.showWelcomeView();
-        this.showToast({
-          kind: "info",
-          message: "当前笔记已不在笔记库中，编辑区已关闭。",
-        });
-      } else if (freshCurrent) {
-        this.currentNote = freshCurrent;
-      }
-
-      this.updateWorkspaceChrome();
-      this.updateDocumentChrome();
-      this.renderTree();
-      this.updateWelcome();
-      this.updateSaveStatus();
-      this.scrollActiveNote();
-
+      this.applyWorkspaceInfo(info, previousPath);
       if (showFeedback) {
         this.showToast({
           kind: "success",
           message: `笔记库已刷新 · ${info.notes.length} 篇笔记`,
         });
       }
+      return info;
     } catch (error) {
       this.showToast({
         kind: "error",
@@ -1350,9 +2127,55 @@ class MojianApp {
         actionLabel: "重试",
         onAction: () => void this.refreshWorkspace(showFeedback),
       });
+      return null;
     } finally {
       this.setWorkspaceBusy(false);
     }
+  }
+
+  private applyWorkspaceInfo(info: WorkspaceInfo, previousPath: string | null): void {
+    this.workspace = info;
+    this.tree = buildFileTree(info.notes, info.folders ?? []);
+    const freshCurrent = previousPath
+      ? (info.notes.find((note) => note.path === previousPath) ?? null)
+      : null;
+
+    if (previousPath && !freshCurrent) {
+      this.closeCurrentNoteForRemoval();
+      this.showToast({
+        kind: "info",
+        message: "当前笔记已不在笔记库中，编辑区已关闭。",
+      });
+    } else if (freshCurrent) {
+      this.currentNote = freshCurrent;
+    }
+
+    this.updateWorkspaceChrome();
+    this.updateDocumentChrome();
+    this.renderTree();
+    this.updateWelcome();
+    this.updateSaveStatus();
+    this.updateManagementActions();
+    this.scrollActiveNote();
+  }
+
+  private closeCurrentNoteForRemoval(): void {
+    this.currentNote = null;
+    this.pendingContent = null;
+    this.lastPersistedContent = null;
+    this.lastSavedAt = 0;
+    this.lastSaveErrorMessage = "";
+    this.loadToken += 1;
+    this.editorToken += 1;
+    this.cancelSaveTimer();
+    this.destroyEditor();
+    this.resetSearchQuery();
+    this.setSaveState("idle");
+    this.setDirtyDot(false);
+    this.showWelcomeView();
+    this.updateDocumentChrome();
+    this.updateManagementActions();
+    this.updateWelcome();
   }
 
   private showToast(options: ToastOptions): void {

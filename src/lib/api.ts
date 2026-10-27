@@ -12,6 +12,7 @@ export interface WorkspaceInfo {
   path: string;
   name: string;
   notes: NoteEntry[];
+  folders: string[];
 }
 
 export interface NoteDocument {
@@ -40,6 +41,22 @@ export const workspaceApi = {
 
   save(path: string, content: string): Promise<SavedNote> {
     return invoke<SavedNote>("save_note", { path, content });
+  },
+
+  createFolder(parent: string, name: string): Promise<string> {
+    return invoke<string>("create_folder", { parent, name });
+  },
+
+  createNote(parent: string, name: string): Promise<string> {
+    return invoke<string>("create_note", { parent, name });
+  },
+
+  renameNote(path: string, newName: string): Promise<string> {
+    return invoke<string>("rename_note", { path, newName });
+  },
+
+  deleteNote(path: string): Promise<void> {
+    return invoke<void>("delete_note", { path });
   },
 };
 

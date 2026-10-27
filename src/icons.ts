@@ -65,6 +65,17 @@ const ICONS = {
   "file-check": `
     <path d="M6 3.8h7.2L18.8 9v11.2H6z" stroke-linejoin="round" />
     <path d="M13 3.9V9h5.7M9 14.6l1.8 1.8 3.3-3.4" stroke-linecap="round" stroke-linejoin="round" />`,
+  plus: `
+    <path d="M12 5v14M5 12h14" stroke-linecap="round" />`,
+  "file-plus": `
+    <path d="M6 3.8h7.2L18.8 9v11.2H6z" stroke-linejoin="round" />
+    <path d="M13 3.9V9h5.7M9.3 14.8h6.4M12.5 11.6v6.4" stroke-linecap="round" stroke-linejoin="round" />`,
+  pencil: `
+    <path d="m4.8 19.2 4.1-1 10.4-10.4a2.1 2.1 0 0 0-3-3L5.9 15.2l-1.1 4Z" stroke-linejoin="round" />
+    <path d="m13.8 6.3 4 4M5.9 15.2l3 3" stroke-linecap="round" />`,
+  trash: `
+    <path d="M4.5 7h15M9.2 7V4.7h5.6V7M6.8 7.2l.9 12h8.6l.9-12" stroke-linejoin="round" />
+    <path d="M10 10.6v5.6M14 10.6v5.6" stroke-linecap="round" />`,
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -99,6 +99,15 @@ export const storage = {
     write(KEYS.recent, all);
   },
 
+  renameRecent(workspacePath: string, oldPath: string, next: { path: string; name: string }): void {
+    const all = read<Record<string, RecentNote[]>>(KEYS.recent, {});
+    const previous = Array.isArray(all[workspacePath]) ? all[workspacePath] : [];
+    all[workspacePath] = previous.map((item) =>
+      item.path === oldPath ? { ...item, path: next.path, name: next.name } : item,
+    );
+    write(KEYS.recent, all);
+  },
+
   getCollapsedFolders(workspacePath: string): Set<string> {
     const all = read<Record<string, string[]>>(KEYS.collapsed, {});
     return new Set(Array.isArray(all[workspacePath]) ? all[workspacePath] : []);
