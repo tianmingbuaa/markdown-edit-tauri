@@ -9,6 +9,7 @@ import type Vditor from "vditor";
 
 import { errorMessage, isDesktopRuntime, workspaceApi } from "./lib/api";
 import type { NoteDocument, NoteEntry, WorkspaceInfo } from "./lib/api";
+import { readClipboardText, writeClipboardText } from "./lib/clipboard";
 import { applyEditorTheme, createEditor } from "./lib/editor";
 import {
   buildFileTree,
@@ -43,6 +44,18 @@ interface ActionMenuItem {
   shortcut?: string;
   danger?: boolean;
 }
+
+interface ContextMenuItem {
+  id: string;
+  label: string;
+  icon: IconName;
+  shortcut?: string;
+  danger?: boolean;
+  disabled?: boolean;
+  run: () => void | Promise<void>;
+}
+
+type TextMenuTarget = "editor" | HTMLInputElement | HTMLTextAreaElement;
 
 interface ToastOptions {
   kind: ToastKind;
@@ -165,6 +178,7 @@ class MojianApp {
   private deleteTarget: NoteEntry | null = null;
   private deleteBusy = false;
   private contextMenuAnchor: HTMLElement | null = null;
+  private contextMenuHostDialog: HTMLDialogElement | null = null;
 
   private dark = false;
   private sidebarCollapsed = false;
@@ -295,10 +309,13 @@ class MojianApp {
     this.deleteNoteButton.addEventListener("click", () => {
       if (this.currentNote) this.openDeleteDialog(this.currentNote);
     });
-    this.fileTree.addEventListener("contextmenu", (event) => {
-      this.handleTreeContextMenu(event);
+    document.addEventListener("contextmenu", (event) => {
+      this.handleContextMenu(event);
     });
-    this.fileTree.addEventListener("scroll", () => this.closeContextMenu(), { passive: true });
+    document.addEventListener("scroll", () => this.closeContextMenu(), {
+      capture: true,
+      passive: true,
+    });
     window.addEventListener("resize", () => this.closeContextMenu());
 
     this.collapseSidebar.addEventListener("click", () => {
@@ -397,7 +414,9 @@ class MojianApp {
     });
 
     this.contextMenu.addEventListener("keydown", (event) => {
-      const items = [...this.contextMenu.querySelectorAll<HTMLButtonElement>(".context-menu__item")];
+      const items = [
+        ...this.contextMenu.querySelectorAll<HTMLButtonElement>(".context-menu__item"),
+      ].filter((button) => !button.disabled);
       const index = items.indexOf(document.activeElement as HTMLButtonElement);
       if (event.key === "Escape") {
         event.preventDefault();
@@ -408,7 +427,19 @@ class MojianApp {
         event.preventDefault();
         if (items.length === 0) return;
         const direction = event.key === "ArrowDown" ? 1 : -1;
-        items[(index + direction + items.length) % items.length].focus();
+        const next =
+          index === -1
+            ? direction === 1
+              ? 0
+              : items.length - 1
+            : (index + direction + items.length) % items.length;
+        items[next]?.focus();
+        return;
+      }
+      if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        if (items.length === 0) return;
+        items[event.key === "Home" ? 0 : items.length - 1]?.focus();
       }
     });
 
@@ -1487,6 +1518,7 @@ class MojianApp {
   }
 
   private destroyEditor(): void {
+    this.closeContextMenu();
     this.clearEditorInitTimer();
     this.editorReady = false;
     const editor = this.editor;
@@ -1930,6 +1962,351 @@ class MojianApp {
     });
   }
 
+  private handleContextMenu(event: MouseEvent): void {
+    // Suppress the system/webview menu everywhere. Only the note tree and
+    // editable text get an application menu.
+    event.preventDefault();
+
+    const target = event.target;
+    if (!(target instanceof Element)) {
+      this.closeContextMenu();
+      return;
+    }
+    if (this.contextMenu.contains(target)) return;
+
+    if (this.fileTree.contains(target)) {
+      if (this.workspace) {
+        this.handleTreeContextMenu(event);
+      } else {
+        this.closeContextMenu();
+      }
+      return;
+    }
+
+    const textTarget = this.resolveTextMenuTarget(target);
+    if (textTarget) {
+      this.openTextMenu(event.clientX, event.clientY, textTarget);
+      return;
+    }
+    this.closeContextMenu();
+  }
+
+  private resolveTextMenuTarget(target: Element): TextMenuTarget | null {
+    if (this.editorMount.contains(target)) {
+      const editable = target.closest('[contenteditable="true"]');
+      if (editable && this.editorMount.contains(editable)) return "editor";
+    }
+
+    const field = target.closest("input, textarea");
+    if (field instanceof HTMLInputElement) {
+      if (field.disabled || field.readOnly) return null;
+      if (["text", "search", "url", "email", "tel"].includes(field.type)) return field;
+      return null;
+    }
+    if (field instanceof HTMLTextAreaElement) {
+      if (field.disabled || field.readOnly) return null;
+      return field;
+    }
+    return null;
+  }
+
+  private textShortcut(key: string, shift = false): string {
+    const apple = /Mac|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    return apple ? `⌘${shift ? " ⇧" : ""} ${key}` : `Ctrl${shift ? " ⇧" : ""} ${key}`;
+  }
+
+  private openTextMenu(x: number, y: number, target: TextMenuTarget): void {
+    if (target === "editor") {
+      if (!this.editor || !this.editorReady) {
+        this.closeContextMenu();
+        return;
+      }
+      this.placeEditorCaret(x, y);
+      const anchor =
+        this.editorMount.querySelector<HTMLElement>(".vditor-ir pre.vditor-reset") ?? undefined;
+
+      const hasSelection = this.editorSelectionText().length > 0;
+      const items: Array<ContextMenuItem | null> = [
+        {
+          id: "undo",
+          label: "撤销",
+          icon: "undo",
+          shortcut: this.textShortcut("Z"),
+          disabled: !this.editorCommandAvailable("undo"),
+          run: () => this.runEditorHistory("undo"),
+        },
+        {
+          id: "redo",
+          label: "重做",
+          icon: "redo",
+          shortcut: this.textShortcut("Z", true),
+          disabled: !this.editorCommandAvailable("redo"),
+          run: () => this.runEditorHistory("redo"),
+        },
+        null,
+        {
+          id: "cut",
+          label: "剪切",
+          icon: "scissors",
+          shortcut: this.textShortcut("X"),
+          disabled: !hasSelection,
+          run: () => this.runEditorClipboard("cut"),
+        },
+        {
+          id: "copy",
+          label: "复制",
+          icon: "copy",
+          shortcut: this.textShortcut("C"),
+          disabled: !hasSelection,
+          run: () => this.runEditorClipboard("copy"),
+        },
+        {
+          id: "paste",
+          label: "粘贴",
+          icon: "clipboard",
+          shortcut: this.textShortcut("V"),
+          disabled: true,
+          run: () => this.pasteIntoEditor(false),
+        },
+        {
+          id: "paste-plain",
+          label: "粘贴为纯文本",
+          icon: "clipboard-text",
+          shortcut: this.textShortcut("V", true),
+          disabled: true,
+          run: () => this.pasteIntoEditor(true),
+        },
+        null,
+        {
+          id: "select-all",
+          label: "全选",
+          icon: "select-all",
+          shortcut: this.textShortcut("A"),
+          run: () => this.selectEditorContent(),
+        },
+      ];
+      this.showTextMenu({ x, y, items, anchor });
+      return;
+    }
+
+    const input = target;
+    const start = input.selectionStart ?? 0;
+    const end = input.selectionEnd ?? 0;
+    const hasSelection = start !== end;
+    const items: Array<ContextMenuItem | null> = [
+      {
+        id: "cut",
+        label: "剪切",
+        icon: "scissors",
+        shortcut: this.textShortcut("X"),
+        disabled: !hasSelection,
+        run: () => this.runInputClipboard(input, start, end, "cut"),
+      },
+      {
+        id: "copy",
+        label: "复制",
+        icon: "copy",
+        shortcut: this.textShortcut("C"),
+        disabled: !hasSelection,
+        run: () => this.runInputClipboard(input, start, end, "copy"),
+      },
+      {
+        id: "paste",
+        label: "粘贴",
+        icon: "clipboard",
+        shortcut: this.textShortcut("V"),
+        disabled: true,
+        run: () => this.pasteIntoInput(input, start, end),
+      },
+      null,
+      {
+        id: "select-all",
+        label: "全选",
+        icon: "select-all",
+        shortcut: this.textShortcut("A"),
+        run: () => {
+          input.focus();
+          input.select();
+        },
+      },
+    ];
+    this.showTextMenu({
+      x,
+      y,
+      items,
+      anchor: input,
+      hostDialog: input.closest("dialog") as HTMLDialogElement | null,
+    });
+  }
+
+  private showTextMenu(options: {
+    x: number;
+    y: number;
+    items: Array<ContextMenuItem | null>;
+    anchor?: HTMLElement;
+    hostDialog?: HTMLDialogElement | null;
+  }): void {
+    const buttons = this.renderMenu({
+      x: options.x,
+      y: options.y,
+      anchor: options.anchor,
+      hostDialog: options.hostDialog,
+      ariaLabel: "文本操作",
+      items: options.items,
+    });
+
+    void readClipboardText().then((text) => {
+      if (!text) return;
+      for (const id of ["paste", "paste-plain"]) {
+        const button = buttons.get(id);
+        if (button?.isConnected) button.disabled = false;
+      }
+    });
+  }
+
+  private placeEditorCaret(x: number, y: number): void {
+    const selection = window.getSelection();
+    if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return;
+
+    const caretRangeFromPoint = (
+      document as Document & {
+        caretRangeFromPoint?: (clientX: number, clientY: number) => Range | null;
+      }
+    ).caretRangeFromPoint;
+    const range = caretRangeFromPoint?.call(document, x, y);
+    if (!range || !this.editorMount.contains(range.startContainer)) return;
+
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  private editorSelectionText(): string {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return "";
+    const range = selection.getRangeAt(0);
+    if (!this.editorMount.contains(range.commonAncestorContainer)) return "";
+    return selection.toString();
+  }
+
+  private editorCommandAvailable(command: "undo" | "redo"): boolean {
+    const button = this.editorMount.querySelector<HTMLElement>(
+      `.vditor-toolbar [data-type="${command}"]`,
+    );
+    return button !== null && !button.classList.contains("vditor-menu--disabled");
+  }
+
+  private runEditorHistory(action: "undo" | "redo"): void {
+    const editor = this.editor;
+    const undo = editor?.vditor.undo;
+    if (!editor || !undo) return;
+    editor.focus();
+    if (action === "undo") {
+      undo.undo(editor.vditor);
+    } else {
+      undo.redo(editor.vditor);
+    }
+    this.handleEditorInput(editor.getValue());
+  }
+
+  private runEditorClipboard(action: "cut" | "copy"): void {
+    const text = this.editorSelectionText();
+    if (!text) return;
+
+    const editor = this.editor;
+    editor?.focus();
+    if (document.execCommand(action)) return;
+
+    void writeClipboardText(text).then((written) => {
+      if (!written) {
+        this.showToast({ kind: "error", message: "无法写入剪贴板。" });
+        return;
+      }
+      if (action === "cut") {
+        editor?.deleteValue();
+        if (editor) this.handleEditorInput(editor.getValue());
+      }
+    });
+  }
+
+  private async pasteIntoEditor(plainText: boolean): Promise<void> {
+    const editor = this.editor;
+    if (!editor || !this.editorReady) return;
+
+    const text = await readClipboardText();
+    if (!text) {
+      this.showToast({ kind: "info", message: "剪贴板为空或无法读取。" });
+      return;
+    }
+
+    editor.focus();
+    const markdown = plainText ? this.escapePlainText(text) : this.escapeHtml(text);
+    editor.insertMD(markdown);
+    this.handleEditorInput(editor.getValue());
+  }
+
+  private escapeHtml(text: string): string {
+    return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  private escapePlainText(text: string): string {
+    return this.escapeHtml(text)
+      .replace(/\\/g, "\\\\")
+      .replace(/([`*_{}\[\]()#+\-.!|~])/g, "\\$1");
+  }
+
+  private selectEditorContent(): void {
+    const editor = this.editor;
+    if (!editor) return;
+    editor.focus();
+
+    const element = this.editorMount.querySelector<HTMLElement>(".vditor-ir pre.vditor-reset");
+    if (!element) return;
+
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }
+
+  private runInputClipboard(
+    input: HTMLInputElement | HTMLTextAreaElement,
+    start: number,
+    end: number,
+    action: "cut" | "copy",
+  ): void {
+    input.focus();
+    input.setSelectionRange(start, end);
+
+    if (document.execCommand(action)) return;
+
+    void writeClipboardText(input.value.slice(start, end)).then((written) => {
+      if (!written || action !== "cut") return;
+      input.focus();
+      input.setRangeText("", start, end, "end");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  private async pasteIntoInput(
+    input: HTMLInputElement | HTMLTextAreaElement,
+    start: number,
+    end: number,
+  ): Promise<void> {
+    const text = await readClipboardText();
+    if (!text) {
+      this.showToast({ kind: "info", message: "剪贴板为空或无法读取。" });
+      return;
+    }
+
+    input.focus();
+    input.setSelectionRange(start, end);
+    if (document.execCommand("insertText", false, text)) return;
+
+    input.setRangeText(text, start, end, "end");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
   private handleTreeContextMenu(event: MouseEvent): void {
     if (!this.workspace) return;
     event.preventDefault();
@@ -2032,20 +2409,63 @@ class MojianApp {
     items: Array<ActionMenuItem | null>;
     onSelect: (action: ActionMenuItem["id"]) => void;
   }): void {
+    const items = options.items.map<ContextMenuItem | null>((item) =>
+      item
+        ? {
+            id: item.id,
+            label: item.label,
+            icon: item.icon,
+            shortcut: item.shortcut,
+            danger: item.danger,
+            run: () => options.onSelect(item.id),
+          }
+        : null,
+    );
+
+    this.renderMenu({
+      x: options.x,
+      y: options.y,
+      anchor: options.anchor,
+      ariaLabel: "笔记操作",
+      head: { eyebrow: options.eyebrow, targetLabel: options.targetLabel },
+      items,
+    });
+  }
+
+  private renderMenu(options: {
+    x: number;
+    y: number;
+    anchor?: HTMLElement;
+    hostDialog?: HTMLDialogElement | null;
+    ariaLabel: string;
+    head?: { eyebrow: string; targetLabel: string };
+    items: Array<ContextMenuItem | null>;
+  }): Map<string, HTMLButtonElement> {
     this.closeContextMenu();
     this.contextMenu.replaceChildren();
+    this.contextMenu.setAttribute("aria-label", options.ariaLabel);
+    this.contextMenu.classList.toggle("context-menu--text", !options.head);
 
-    const head = document.createElement("div");
-    head.className = "context-menu__head";
-    const eyebrow = document.createElement("span");
-    eyebrow.className = "context-menu__eyebrow";
-    eyebrow.textContent = options.eyebrow;
-    const target = document.createElement("span");
-    target.className = "context-menu__target";
-    target.textContent = options.targetLabel;
-    head.append(eyebrow, target);
-    this.contextMenu.append(head);
+    if (options.hostDialog?.open) {
+      options.hostDialog.classList.add("dialog--menu-open");
+      options.hostDialog.append(this.contextMenu);
+      this.contextMenuHostDialog = options.hostDialog;
+    }
 
+    if (options.head) {
+      const head = document.createElement("div");
+      head.className = "context-menu__head";
+      const eyebrow = document.createElement("span");
+      eyebrow.className = "context-menu__eyebrow";
+      eyebrow.textContent = options.head.eyebrow;
+      const target = document.createElement("span");
+      target.className = "context-menu__target";
+      target.textContent = options.head.targetLabel;
+      head.append(eyebrow, target);
+      this.contextMenu.append(head);
+    }
+
+    const buttons = new Map<string, HTMLButtonElement>();
     for (const item of options.items) {
       if (!item) {
         const separator = document.createElement("div");
@@ -2053,16 +2473,20 @@ class MojianApp {
         this.contextMenu.append(separator);
         continue;
       }
+
       const button = document.createElement("button");
       button.type = "button";
       button.className = `context-menu__item${item.danger ? " context-menu__item--danger" : ""}`;
       button.setAttribute("role", "menuitem");
+      button.dataset.menuItem = item.id;
+      button.disabled = item.disabled ?? false;
 
       const icon = document.createElement("span");
       icon.className = "context-menu__item-icon";
       icon.innerHTML = iconSvg(item.icon, 16);
 
       const label = document.createElement("span");
+      label.className = "context-menu__item-label";
       label.textContent = item.label;
 
       const shortcut = document.createElement("span");
@@ -2071,9 +2495,12 @@ class MojianApp {
 
       button.append(icon, label, shortcut);
       button.addEventListener("click", () => {
+        if (button.disabled) return;
         this.closeContextMenu();
-        options.onSelect(item.id);
+        void item.run();
       });
+
+      buttons.set(item.id, button);
       this.contextMenu.append(button);
     }
 
@@ -2096,8 +2523,10 @@ class MojianApp {
     this.contextMenu.style.top = `${Math.round(top)}px`;
 
     requestAnimationFrame(() => {
-      this.contextMenu.querySelector<HTMLButtonElement>(".context-menu__item")?.focus();
+      [...buttons.values()].find((button) => !button.disabled)?.focus();
     });
+
+    return buttons;
   }
 
   private closeContextMenu(restoreFocus = false): void {
@@ -2106,6 +2535,13 @@ class MojianApp {
     this.contextMenu.hidden = true;
     this.contextMenu.replaceChildren();
     this.contextMenuAnchor = null;
+    if (this.contextMenuHostDialog) {
+      this.contextMenuHostDialog.classList.remove("dialog--menu-open");
+      this.contextMenuHostDialog = null;
+    }
+    if (this.contextMenu.parentElement !== document.body) {
+      document.body.append(this.contextMenu);
+    }
     if (anchor) {
       anchor.classList.remove("is-menu-open");
       if (anchor === this.createEntryButton) {

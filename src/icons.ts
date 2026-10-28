@@ -83,6 +83,28 @@ const ICONS = {
   restore: `
     <rect x="8.4" y="4.6" width="11" height="11" rx="1.4" />
     <path d="M15.4 19.4H5.9a1.1 1.1 0 0 1-1.1-1.1V8.9" stroke-linecap="round" stroke-linejoin="round" />`,
+  undo: `
+    <path d="M8.6 5.2 4 9.8l4.6 4.6" stroke-linejoin="round" />
+    <path d="M4 9.8h8.9a5.9 5.9 0 0 1 0 11.8H8.4" />`,
+  redo: `
+    <path d="m15.4 5.2 4.6 4.6-4.6 4.6" stroke-linejoin="round" />
+    <path d="M20 9.8h-8.9a5.9 5.9 0 0 0 0 11.8h4.5" />`,
+  scissors: `
+    <circle cx="5.8" cy="6.9" r="2.3" />
+    <circle cx="5.8" cy="17.1" r="2.3" />
+    <path d="m7.8 8.3 12 10.8M7.8 15.7l12-10.8M9.7 11.3l2.1-1.9" stroke-linecap="round" />`,
+  copy: `
+    <rect x="8.4" y="8.4" width="11.2" height="11.2" rx="2" />
+    <path d="M15.6 5.4H6.4a1.6 1.6 0 0 0-1.6 1.6v9.2" stroke-linecap="round" />`,
+  clipboard: `
+    <rect x="5" y="4.6" width="14" height="15.6" rx="2" />
+    <path d="M9 4.7V3.1h6v1.6M9 10.4h6M9 14.2h4.3M9 18h6" stroke-linecap="round" />`,
+  "clipboard-text": `
+    <rect x="5" y="4.6" width="14" height="15.6" rx="2" />
+    <path d="M9 4.7V3.1h6v1.6M9.2 10.2h5.6M12 10.2v6.5M9.8 16.7h4.4" stroke-linecap="round" />`,
+  "select-all": `
+    <rect x="3.7" y="3.7" width="16.6" height="16.6" rx="2.4" stroke-dasharray="2.4 2.4" />
+    <rect x="8" y="8" width="8" height="8" rx="1.1" />`,
 } as const;
 
 export type IconName = keyof typeof ICONS;
