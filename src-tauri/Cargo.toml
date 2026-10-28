@@ -1,6 +1,6 @@
 [package]
 name = "mojian"
-version = "0.1.0"
+version = "0.1.1"
 description = "A calm, autosaving Markdown workspace for the desktop."
 authors = ["Mojian"]
 edition = "2024"
