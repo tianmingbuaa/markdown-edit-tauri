@@ -162,7 +162,7 @@
       ></div>
 
       <main class="main">
-        <header class="topbar">
+        <header id="topbar" class="topbar">
           <div class="topbar__left">
             <button
               id="sidebar-toggle"
@@ -194,23 +194,32 @@
               <span id="save-status-time" class="save-status__time"></span>
             </button>
             <span class="topbar__rule" aria-hidden="true"></span>
-            <button
-              id="open-workspace-top"
-              class="topbar-action"
-              type="button"
-              title="打开笔记库 (Ctrl + O)"
-            >
-              <span class="icon-slot" data-icon="folder"></span>
-              <span>打开笔记库</span>
-            </button>
-            <button
-              id="theme-toggle-top"
-              class="icon-btn"
-              type="button"
-              aria-label="切换主题"
-              title="切换主题"
-              data-icon="moon"
-            ></button>
+            <div id="window-controls" class="window-controls" aria-label="窗口控制">
+              <button
+                id="window-minimize"
+                class="window-control"
+                type="button"
+                aria-label="最小化"
+                title="最小化"
+                data-icon="minimize"
+              ></button>
+              <button
+                id="window-maximize"
+                class="window-control"
+                type="button"
+                aria-label="最大化"
+                title="最大化"
+                data-icon="maximize"
+              ></button>
+              <button
+                id="window-close"
+                class="window-control window-control--close"
+                type="button"
+                aria-label="关闭"
+                title="关闭"
+                data-icon="x"
+              ></button>
+            </div>
           </div>
         </header>
 

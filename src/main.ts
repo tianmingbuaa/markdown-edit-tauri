@@ -70,7 +70,6 @@ class MojianApp {
   private sidebarToggle!: HTMLButtonElement;
   private collapseSidebar!: HTMLButtonElement;
   private openWorkspaceSide!: HTMLButtonElement;
-  private openWorkspaceTop!: HTMLButtonElement;
   private openWorkspaceHero!: HTMLButtonElement;
   private refreshWorkspaceButton!: HTMLButtonElement;
   private refreshHero!: HTMLButtonElement;
@@ -96,8 +95,11 @@ class MojianApp {
   private deleteConfirm!: HTMLButtonElement;
   private deleteCancel!: HTMLButtonElement;
   private themeToggle!: HTMLButtonElement;
-  private themeToggleTop!: HTMLButtonElement;
   private themeLabel!: HTMLElement;
+  private topbar!: HTMLElement;
+  private windowMinimizeButton!: HTMLButtonElement;
+  private windowMaximizeButton!: HTMLButtonElement;
+  private windowCloseButton!: HTMLButtonElement;
   private saveStatus!: HTMLButtonElement;
   private saveStatusText!: HTMLElement;
   private saveStatusTime!: HTMLElement;
@@ -201,12 +203,15 @@ class MojianApp {
 
   private collectDom(): void {
     this.app = byId<HTMLDivElement>("app");
+    this.topbar = byId<HTMLElement>("topbar");
+    this.windowMinimizeButton = byId<HTMLButtonElement>("window-minimize");
+    this.windowMaximizeButton = byId<HTMLButtonElement>("window-maximize");
+    this.windowCloseButton = byId<HTMLButtonElement>("window-close");
     this.sidebar = byId<HTMLElement>("sidebar");
     this.sidebarResizer = byId<HTMLElement>("sidebar-resizer");
     this.sidebarToggle = byId<HTMLButtonElement>("sidebar-toggle");
     this.collapseSidebar = byId<HTMLButtonElement>("collapse-sidebar");
     this.openWorkspaceSide = byId<HTMLButtonElement>("open-workspace-side");
-    this.openWorkspaceTop = byId<HTMLButtonElement>("open-workspace-top");
     this.openWorkspaceHero = byId<HTMLButtonElement>("open-workspace-hero");
     this.refreshWorkspaceButton = byId<HTMLButtonElement>("refresh-workspace");
     this.refreshHero = byId<HTMLButtonElement>("refresh-hero");
@@ -232,7 +237,6 @@ class MojianApp {
     this.deleteConfirm = byId<HTMLButtonElement>("delete-confirm");
     this.deleteCancel = byId<HTMLButtonElement>("delete-cancel");
     this.themeToggle = byId<HTMLButtonElement>("theme-toggle");
-    this.themeToggleTop = byId<HTMLButtonElement>("theme-toggle-top");
     this.themeLabel = byId<HTMLElement>("theme-label");
     this.saveStatus = byId<HTMLButtonElement>("save-status");
     this.saveStatusText = byId<HTMLElement>("save-status-text");
@@ -275,7 +279,6 @@ class MojianApp {
       void this.openWorkspaceDialog();
     };
     this.openWorkspaceSide.addEventListener("click", openWorkspace);
-    this.openWorkspaceTop.addEventListener("click", openWorkspace);
     this.openWorkspaceHero.addEventListener("click", openWorkspace);
 
     this.refreshWorkspaceButton.addEventListener("click", () => void this.refreshWorkspace(true));
@@ -306,7 +309,6 @@ class MojianApp {
     });
 
     this.themeToggle.addEventListener("click", () => this.toggleTheme());
-    this.themeToggleTop.addEventListener("click", () => this.toggleTheme());
 
     this.saveStatus.addEventListener("click", () => {
       void this.saveNow(true);
@@ -511,8 +513,39 @@ class MojianApp {
   }
 
   private bindWindowLifecycle(): void {
-    if (!isDesktopRuntime()) return;
+    if (!isDesktopRuntime()) {
+      this.windowMinimizeButton.disabled = true;
+      this.windowMaximizeButton.disabled = true;
+      this.windowCloseButton.disabled = true;
+      return;
+    }
+
     const currentWindow = getCurrentWindow();
+
+    this.windowMinimizeButton.addEventListener("click", () => void this.minimizeWindow());
+    this.windowMaximizeButton.addEventListener("click", () => void this.toggleMaximizeWindow());
+    this.windowCloseButton.addEventListener("click", () => void this.closeWindowFromControl());
+    void this.updateMaximizeControl();
+
+    void currentWindow
+      .onResized(() => {
+        void this.updateMaximizeControl();
+      })
+      .catch(() => undefined);
+
+    const isInteractive = (target: EventTarget | null): boolean =>
+      target instanceof Element &&
+      Boolean(target.closest("button, a, input, textarea, select, [data-no-drag]"));
+
+    this.topbar.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || event.detail > 1 || isInteractive(event.target)) return;
+      void currentWindow.startDragging().catch(() => undefined);
+    });
+
+    this.topbar.addEventListener("dblclick", (event) => {
+      if (event.button !== 0 || isInteractive(event.target)) return;
+      void this.toggleMaximizeWindow();
+    });
 
     void currentWindow
       .onCloseRequested(async (event) => {
@@ -548,6 +581,69 @@ class MojianApp {
     window.addEventListener("blur", () => {
       if (this.pendingContent !== null) void this.saveNow(false);
     });
+  }
+
+  private async minimizeWindow(): Promise<void> {
+    if (!isDesktopRuntime()) return;
+    try {
+      await getCurrentWindow().minimize();
+    } catch (error) {
+      this.showToast({
+        kind: "error",
+        message: `无法最小化窗口：${errorMessage(error)}`,
+      });
+    }
+  }
+
+  private async toggleMaximizeWindow(): Promise<void> {
+    if (!isDesktopRuntime()) return;
+    try {
+      await getCurrentWindow().toggleMaximize();
+      await this.updateMaximizeControl();
+    } catch (error) {
+      this.showToast({
+        kind: "error",
+        message: `无法切换窗口大小：${errorMessage(error)}`,
+      });
+    }
+  }
+
+  private async updateMaximizeControl(): Promise<void> {
+    if (!isDesktopRuntime() || !this.windowMaximizeButton) return;
+    try {
+      const maximized = await getCurrentWindow().isMaximized();
+      const label = maximized ? "还原" : "最大化";
+      setIcon(this.windowMaximizeButton, maximized ? "restore" : "maximize", 13);
+      this.windowMaximizeButton.setAttribute("aria-label", label);
+      this.windowMaximizeButton.title = label;
+    } catch (_) {
+      /* Window state is cosmetic; controls still work if this query fails. */
+    }
+  }
+
+  private async closeWindowFromControl(): Promise<void> {
+    if (!isDesktopRuntime() || this.isClosing) return;
+    const currentWindow = getCurrentWindow();
+    this.isClosing = true;
+    const saved = await this.saveNow(false);
+    if (!saved) {
+      this.isClosing = false;
+      this.showToast({
+        kind: "error",
+        message: "笔记尚未保存成功，窗口保持打开。请重试保存后再关闭。",
+        duration: 8500,
+      });
+      return;
+    }
+    try {
+      await currentWindow.destroy();
+    } catch (error) {
+      this.isClosing = false;
+      this.showToast({
+        kind: "error",
+        message: `无法关闭窗口：${errorMessage(error)}`,
+      });
+    }
   }
 
   private bindSidebarResizer(): void {
@@ -625,9 +721,7 @@ class MojianApp {
     this.themeLabel.textContent = action;
     const themeIcon = this.dark ? "sun" : "moon";
     setIcon(this.themeToggle.querySelector(".icon-slot"), themeIcon);
-    setIcon(this.themeToggleTop, themeIcon);
     this.themeToggle.setAttribute("aria-label", `切换为${action}主题`);
-    this.themeToggleTop.setAttribute("aria-label", `切换为${action}主题`);
 
     if (persist) storage.setTheme(this.dark ? "dark" : "light");
     if (updateEditor && this.editor && this.editorReady) {
@@ -723,7 +817,6 @@ class MojianApp {
     this.refreshWorkspaceButton.disabled = disabled;
     this.refreshHero.disabled = disabled;
     this.openWorkspaceSide.disabled = busy;
-    this.openWorkspaceTop.disabled = busy;
     this.openWorkspaceHero.disabled = busy;
     this.fileTree.setAttribute("aria-busy", String(busy));
     if (this.workspace) {

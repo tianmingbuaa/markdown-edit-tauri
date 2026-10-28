@@ -76,6 +76,13 @@ const ICONS = {
   trash: `
     <path d="M4.5 7h15M9.2 7V4.7h5.6V7M6.8 7.2l.9 12h8.6l.9-12" stroke-linejoin="round" />
     <path d="M10 10.6v5.6M14 10.6v5.6" stroke-linecap="round" />`,
+  minimize: `
+    <path d="M5 12h14" stroke-linecap="round" />`,
+  maximize: `
+    <rect x="5.2" y="5.2" width="13.6" height="13.6" rx="1.2" />`,
+  restore: `
+    <rect x="8.4" y="4.6" width="11" height="11" rx="1.4" />
+    <path d="M15.4 19.4H5.9a1.1 1.1 0 0 1-1.1-1.1V8.9" stroke-linecap="round" stroke-linejoin="round" />`,
 } as const;
 
 export type IconName = keyof typeof ICONS;

@@ -192,6 +192,7 @@ kbd {
   width: 100%;
   height: 100%;
   background: var(--canvas);
+  box-shadow: inset 0 0 0 1px var(--line-soft);
   transition: grid-template-columns 380ms var(--ease-out);
   animation: appReveal 580ms var(--ease-out) both;
 }
@@ -1012,11 +1013,12 @@ kbd {
   justify-content: space-between;
   height: var(--topbar-height);
   flex: 0 0 var(--topbar-height);
-  padding: 0 18px 0 12px;
+  padding: 0 10px 0 12px;
   border-bottom: 1px solid var(--line-soft);
   background: color-mix(in srgb, var(--canvas) 82%, transparent);
   -webkit-backdrop-filter: blur(18px) saturate(1.15);
   backdrop-filter: blur(18px) saturate(1.15);
+  user-select: none;
 }
 
 .app.is-busy .topbar::after {
@@ -1096,37 +1098,44 @@ kbd {
   background: var(--line);
 }
 
-.topbar-action {
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  flex: 0 0 auto;
+}
+
+.window-control {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  height: 32px;
-  padding: 0 11px;
-  border: 1px solid transparent;
-  border-radius: 9px;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  border-radius: 7px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 550;
-  white-space: nowrap;
   transition:
-    color 160ms ease,
-    background 160ms ease,
-    border-color 160ms ease;
+    color 140ms ease,
+    background 140ms ease,
+    transform 120ms var(--ease-out);
 }
 
-.topbar-action:hover {
+.window-control:hover {
   color: var(--ink);
-  border-color: var(--line-soft);
-  background: var(--canvas-lift);
+  background: color-mix(in srgb, var(--ink) 5.5%, transparent);
 }
 
-.topbar-action:disabled {
-  opacity: 0.4;
+.window-control:active {
+  transform: translateY(0.5px);
 }
 
-.topbar-action .app-icon {
-  width: 15px;
-  height: 15px;
+.window-control--close:hover {
+  color: #fff8f5;
+  background: var(--red);
+}
+
+.window-control .app-icon {
+  width: 14px;
+  height: 14px;
 }
 
 .save-status {
@@ -2625,15 +2634,6 @@ kbd {
     gap: 10px 14px;
   }
 
-  .topbar-action span:last-child {
-    display: none;
-  }
-
-  .topbar-action {
-    width: 32px;
-    padding: 0;
-    justify-content: center;
-  }
 }
 
 @media (max-width: 900px) {
