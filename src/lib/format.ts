@@ -1,10 +1,4 @@
-const CJK = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g;
 const numberFormatter = new Intl.NumberFormat("zh-CN");
-
-export interface ReadingStats {
-  characters: number;
-  minutes: number;
-}
 
 export function timeLabel(timestamp: number): string {
   return new Date(timestamp).toLocaleTimeString("zh-CN", {
@@ -39,7 +33,7 @@ export function formatCharacters(characters: number): string {
   return `${numberFormatter.format(characters)} 字符`;
 }
 
-export function readingStats(markdown: string): ReadingStats {
+export function countCharacters(markdown: string): number {
   const readable = markdown
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/~~~[\s\S]*?~~~/g, " ")
@@ -51,22 +45,7 @@ export function readingStats(markdown: string): ReadingStats {
     .replace(/\s+/g, " ")
     .trim();
 
-  const cjkCount = (readable.match(CJK) ?? []).length;
-  const latinWords = (
-    readable.replace(CJK, " ").match(/[A-Za-z0-9]+(?:['’_-][A-Za-z0-9]+)*/g) ?? []
-  ).length;
-  const characters = readable.replace(/\s/g, "").length;
-  const minutes =
-    cjkCount + latinWords === 0
-      ? 0
-      : Math.max(1, Math.ceil(cjkCount / 380 + latinWords / 230));
-
-  return { characters, minutes };
-}
-
-export function readingTimeLabel(stats: ReadingStats): string {
-  if (stats.minutes === 0) return "空白笔记";
-  return `约 ${stats.minutes} 分钟`;
+  return readable.replace(/\s/g, "").length;
 }
 
 export function directoryLabel(path: string): string {

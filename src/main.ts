@@ -20,14 +20,12 @@ import {
 } from "./lib/file-tree";
 import type { FileNode, FolderNode } from "./lib/file-tree";
 import {
+  countCharacters,
   directoryLabel,
   formatCharacters,
-  readingStats,
-  readingTimeLabel,
   timeLabel,
   updatedLabel,
 } from "./lib/format";
-import type { ReadingStats } from "./lib/format";
 import { hydrateIcons, iconSvg, setIcon } from "./icons";
 import type { IconName } from "./icons";
 import { storage } from "./lib/storage";
@@ -142,9 +140,7 @@ class MojianApp {
   private documentTitle!: HTMLElement;
   private documentPath!: HTMLElement;
   private documentUpdated!: HTMLElement;
-  private docReadingTime!: HTMLElement;
   private wordCount!: HTMLElement;
-  private readTime!: HTMLElement;
   private toastRegion!: HTMLElement;
   private shortcutDialog!: HTMLDialogElement;
 
@@ -153,7 +149,7 @@ class MojianApp {
   private collapsedFolders = new Set<string>();
   private query = "";
   private currentNote: NoteEntry | null = null;
-  private currentStats: ReadingStats = { characters: 0, minutes: 0 };
+  private characterCount = 0;
 
   private editor: Vditor | null = null;
   private editorReady = false;
@@ -281,9 +277,7 @@ class MojianApp {
     this.documentTitle = byId<HTMLElement>("document-title");
     this.documentPath = byId<HTMLElement>("document-path");
     this.documentUpdated = byId<HTMLElement>("document-updated");
-    this.docReadingTime = byId<HTMLElement>("doc-reading-time");
     this.wordCount = byId<HTMLElement>("word-count");
-    this.readTime = byId<HTMLElement>("read-time");
     this.toastRegion = byId<HTMLElement>("toast-region");
     this.shortcutDialog = byId<HTMLDialogElement>("shortcuts-dialog");
   }
@@ -1456,13 +1450,8 @@ class MojianApp {
   }
 
   private updateStats(value: string): void {
-    this.currentStats = readingStats(value);
-    this.wordCount.textContent = formatCharacters(this.currentStats.characters);
-    this.readTime.textContent =
-      this.currentStats.minutes === 0
-        ? "空白笔记"
-        : `约 ${this.currentStats.minutes} 分钟阅读`;
-    this.docReadingTime.textContent = readingTimeLabel(this.currentStats);
+    this.characterCount = countCharacters(value);
+    this.wordCount.textContent = formatCharacters(this.characterCount);
   }
 
   private updateUpdatedLabel(): void {
@@ -1486,7 +1475,6 @@ class MojianApp {
     this.documentPath.textContent = `${workspaceName} / ${note.path}`;
     this.documentPath.title = note.path;
     this.updateUpdatedLabel();
-    this.docReadingTime.textContent = readingTimeLabel(this.currentStats);
     document.title = `${note.name} · 墨笺`;
     this.updateManagementActions();
   }
@@ -1498,10 +1486,8 @@ class MojianApp {
     this.documentTitle.textContent = "未命名笔记";
     this.documentPath.textContent = this.workspace?.name ?? "笔记库";
     this.documentUpdated.textContent = "刚刚更新";
-    this.docReadingTime.textContent = "约 1 分钟";
     this.wordCount.textContent = "0 字符";
-    this.readTime.textContent = "空白笔记";
-    this.currentStats = { characters: 0, minutes: 0 };
+    this.characterCount = 0;
     document.title = "墨笺 · Markdown";
   }
 
