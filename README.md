@@ -131,7 +131,7 @@ cargo test
 │       ├── clipboard.ts          # 系统剪贴板纯文本读写（Tauri 插件 / Web API 回退）
 │       ├── editor.ts             # Vditor IR 配置与主题同步
 │       ├── file-tree.ts          # 笔记 + 文件夹路径 → 文件夹树 / 搜索
-│       ├── format.ts             # 时间、字数、阅读时长
+│       ├── format.ts             # 时间、字符统计
 │       └── storage.ts            # 主题、最近打开、侧边栏状态等本地偏好
 ├── src-tauri/
 │   ├── src/lib.rs                # Tauri 入口、命令注册、工作区状态
