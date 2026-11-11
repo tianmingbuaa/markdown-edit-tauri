@@ -4,10 +4,6 @@
 //! encryption key (DEK). The DEK is wrapped by a key encryption key (KEK)
 //! derived from the user's password with Argon2id, so the password never
 //! touches the file format directly.
-//!
-//! The module is a shared primitive layer; later vault tasks consume these
-//! items, so unused-until-then declarations are allowed here.
-#![allow(dead_code)]
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, Payload};

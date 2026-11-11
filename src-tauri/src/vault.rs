@@ -6,9 +6,6 @@
 //! with the DEK; plaintext notes found during creation or later opens are
 //! migrated in place.
 
-// Temporary until Task 4 wires vault commands.
-#![allow(dead_code)]
-
 use std::fs;
 use std::io::Read;
 use std::path::Path;
