@@ -37,6 +37,9 @@ pub const VERSION: u32 = 1;
 /// Cipher identifier written into the marker.
 const CIPHER: &str = "xchacha20poly1305";
 
+/// KDF algorithm written into the marker.
+const KDF_ALGORITHM: &str = "argon2id";
+
 /// Length of a wrapped DEK: nonce (24) plus ciphertext and tag (32 + 16).
 const WRAPPED_KEY_LEN: usize = crypto::NONCE_LEN + crypto::KEY_LEN + crypto::TAG_LEN;
 
@@ -69,6 +72,41 @@ pub struct OpenVault {
     pub scan: WorkspaceScan,
 }
 
+/// KDF metadata as it appears in the marker.
+///
+/// This is separate from `crypto::KdfParams` because the file format fixes
+/// the algorithm name and the exact `memoryKiB` spelling, while key derivation
+/// only needs the numeric cost parameters.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct VaultKdf {
+    pub algorithm: String,
+    #[serde(rename = "memoryKiB")]
+    pub memory_kib: u32,
+    pub iterations: u32,
+    pub parallelism: u32,
+}
+
+impl VaultKdf {
+    /// Build marker metadata from the parameters used for derivation.
+    fn from_params(params: &crypto::KdfParams) -> Self {
+        Self {
+            algorithm: KDF_ALGORITHM.to_string(),
+            memory_kib: params.memory_kib,
+            iterations: params.iterations,
+            parallelism: params.parallelism,
+        }
+    }
+
+    /// Convert to the derivation parameters accepted by the `crypto` module.
+    fn to_params(&self) -> crypto::KdfParams {
+        crypto::KdfParams {
+            memory_kib: self.memory_kib,
+            iterations: self.iterations,
+            parallelism: self.parallelism,
+        }
+    }
+}
+
 /// The on-disk library marker.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,7 +115,7 @@ pub struct VaultMetadata {
     pub version: u32,
     pub state: VaultState,
     pub vault_id: String,
-    pub kdf: crypto::KdfParams,
+    pub kdf: VaultKdf,
     pub salt: String,
     pub cipher: String,
     pub wrapped_key: String,
@@ -151,7 +189,7 @@ pub fn create(root: &Path, password: &str) -> Result<OpenVault, String> {
         version: VERSION,
         state: VaultState::Migrating,
         vault_id: STANDARD.encode(vault_id),
-        kdf,
+        kdf: VaultKdf::from_params(&kdf),
         salt: STANDARD.encode(salt),
         cipher: CIPHER.to_string(),
         wrapped_key: STANDARD.encode(&wrapped),
@@ -190,8 +228,8 @@ pub fn unlock(root: &Path, password: &str) -> Result<OpenVault, String> {
         .try_into()
         .map_err(|_| UNLOCK_FAILURE.to_string())?;
 
-    let kek = crypto::derive_kek(password, &salt, &metadata.kdf)
-        .map_err(|_| UNLOCK_FAILURE.to_string())?;
+    let kdf = metadata.kdf.to_params();
+    let kek = crypto::derive_kek(password, &salt, &kdf).map_err(|_| UNLOCK_FAILURE.to_string())?;
     let key =
         crypto::unwrap_dek(&kek, &wrapped, &vault_id).map_err(|_| UNLOCK_FAILURE.to_string())?;
     let session = VaultSession::new(key, vault_id);
@@ -247,7 +285,10 @@ fn validate_metadata(metadata: &VaultMetadata) -> Result<(), String> {
     if metadata.cipher != CIPHER {
         return Err("The library marker uses an unsupported cipher.".to_string());
     }
-    metadata.kdf.validate()?;
+    if metadata.kdf.algorithm != KDF_ALGORITHM {
+        return Err("The library marker uses an unsupported KDF algorithm.".to_string());
+    }
+    metadata.kdf.to_params().validate()?;
 
     let salt = decode_base64("salt", &metadata.salt)?;
     if salt.len() != crypto::SALT_LEN {
@@ -471,6 +512,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_an_unknown_kdf_algorithm() {
+        let dir = TestDir::new("vault-kdf-algorithm");
+        dir.write("a.md", "alpha");
+        create(dir.path(), "pw").unwrap();
+        let marker = dir.path().join(MARKER_FILE);
+
+        let mut json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
+        json["kdf"]["algorithm"] = serde_json::json!("scrypt");
+        fs::write(&marker, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+        assert!(inspect(dir.path()).is_err());
+        assert!(unlock(dir.path(), "pw").is_err());
+    }
+
+    #[test]
     fn create_refuses_an_existing_vault_and_marker_is_not_scanned() {
         let dir = TestDir::new("vault-existing");
         dir.write("a.md", "alpha");
@@ -499,9 +555,11 @@ mod tests {
         assert_eq!(json["version"].as_u64(), Some(u64::from(VERSION)));
         assert_eq!(json["state"], serde_json::json!("ready"));
         assert_eq!(json["cipher"], serde_json::json!("xchacha20poly1305"));
-        assert_eq!(json["kdf"]["memoryKib"].as_u64(), Some(65_536));
+        assert_eq!(json["kdf"]["algorithm"], serde_json::json!("argon2id"));
+        assert_eq!(json["kdf"]["memoryKiB"].as_u64(), Some(65_536));
         assert_eq!(json["kdf"]["iterations"].as_u64(), Some(3));
         assert_eq!(json["kdf"]["parallelism"].as_u64(), Some(1));
+        assert!(json["kdf"].get("memoryKib").is_none());
         assert!(json.get("vaultId").is_some());
         assert!(json.get("wrappedKey").is_some());
         assert!(json.get("salt").is_some());
