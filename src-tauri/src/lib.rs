@@ -82,11 +82,10 @@ async fn create_vault(
     state: State<'_, AppState>,
 ) -> Result<WorkspaceInfo, String> {
     let password = Zeroizing::new(password);
-    let opened = tauri::async_runtime::spawn_blocking(move || {
-        vault::create(Path::new(&path), password.as_str())
-    })
-    .await
-    .map_err(|error| format!("Creating the vault failed: {error}"))??;
+    let opened =
+        tauri::async_runtime::spawn_blocking(move || vault::create(Path::new(&path), password))
+            .await
+            .map_err(|error| format!("Creating the vault failed: {error}"))??;
 
     activate(opened, &state)
 }
@@ -99,11 +98,10 @@ async fn open_vault(
     state: State<'_, AppState>,
 ) -> Result<WorkspaceInfo, String> {
     let password = Zeroizing::new(password);
-    let opened = tauri::async_runtime::spawn_blocking(move || {
-        vault::unlock(Path::new(&path), password.as_str())
-    })
-    .await
-    .map_err(|error| format!("Opening the vault failed: {error}"))??;
+    let opened =
+        tauri::async_runtime::spawn_blocking(move || vault::unlock(Path::new(&path), password))
+            .await
+            .map_err(|error| format!("Opening the vault failed: {error}"))??;
 
     activate(opened, &state)
 }
@@ -293,8 +291,8 @@ mod tests {
 
         let new = TestDir::new("state-new");
         new.write("a.md", "alpha");
-        crate::vault::create(new.path(), "right").unwrap();
-        assert!(crate::vault::unlock(new.path(), "wrong").is_err());
+        crate::vault::create(new.path(), Zeroizing::new("right".to_string())).unwrap();
+        assert!(crate::vault::unlock(new.path(), Zeroizing::new("wrong".to_string())).is_err());
 
         let (workspace, _session) = state.require().unwrap();
         assert_eq!(workspace.name, "old");

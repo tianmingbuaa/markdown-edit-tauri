@@ -16,6 +16,7 @@ use base64::engine::general_purpose::STANDARD;
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
 
 use crate::crypto::{self, VaultKey, VaultSession};
 use crate::notes;
@@ -39,6 +40,9 @@ const KDF_ALGORITHM: &str = "argon2id";
 
 /// Length of a wrapped DEK: nonce (24) plus ciphertext and tag (32 + 16).
 const WRAPPED_KEY_LEN: usize = crypto::NONCE_LEN + crypto::KEY_LEN + crypto::TAG_LEN;
+
+/// Maximum marker size accepted before reading it into memory.
+const MAX_MARKER_SIZE: u64 = 64 * 1024;
 
 /// Failure returned for every password- or damage-related unlock problem.
 const UNLOCK_FAILURE: &str =
@@ -150,7 +154,7 @@ pub fn inspect(root: &Path) -> Result<VaultInspection, String> {
 /// The marker is written in the `migrating` state before any note is touched,
 /// so a crash mid-migration can be resumed by [`unlock`] without re-encrypting
 /// already sealed files.
-pub fn create(root: &Path, password: &str) -> Result<OpenVault, String> {
+pub fn create(root: &Path, password: Zeroizing<String>) -> Result<OpenVault, String> {
     let workspace = workspace::workspace_from_root(root)?;
     let marker = workspace.root.join(MARKER_FILE);
     match fs::symlink_metadata(&marker) {
@@ -175,10 +179,12 @@ pub fn create(root: &Path, password: &str) -> Result<OpenVault, String> {
     let key = VaultKey::generate();
     let kdf = crypto::KdfParams::default();
 
-    let kek = crypto::derive_kek(password, &salt, &kdf)
+    let kek = crypto::derive_kek(password.as_str(), &salt, &kdf)
         .map_err(|error| format!("Could not derive the library key: {error}"))?;
+    drop(password);
     let wrapped = crypto::wrap_dek(&kek, &key, &vault_id)
         .map_err(|error| format!("Could not wrap the library key: {error}"))?;
+    drop(kek);
     let session = VaultSession::new(key, vault_id);
 
     let mut metadata = VaultMetadata {
@@ -210,7 +216,7 @@ pub fn create(root: &Path, password: &str) -> Result<OpenVault, String> {
 /// Any plaintext Markdown files added since the last open are sealed before the
 /// library is returned. A marker left in `migrating` state by an interrupted
 /// creation is finished and promoted to `ready`.
-pub fn unlock(root: &Path, password: &str) -> Result<OpenVault, String> {
+pub fn unlock(root: &Path, password: Zeroizing<String>) -> Result<OpenVault, String> {
     let workspace = workspace::workspace_from_root(root)?;
     let Some(mut metadata) = read_metadata(&workspace.root)? else {
         return Err("This folder is not an encrypted library.".to_string());
@@ -226,9 +232,12 @@ pub fn unlock(root: &Path, password: &str) -> Result<OpenVault, String> {
         .map_err(|_| UNLOCK_FAILURE.to_string())?;
 
     let kdf = metadata.kdf.to_params();
-    let kek = crypto::derive_kek(password, &salt, &kdf).map_err(|_| UNLOCK_FAILURE.to_string())?;
+    let kek = crypto::derive_kek(password.as_str(), &salt, &kdf)
+        .map_err(|_| UNLOCK_FAILURE.to_string())?;
+    drop(password);
     let key =
         crypto::unwrap_dek(&kek, &wrapped, &vault_id).map_err(|_| UNLOCK_FAILURE.to_string())?;
+    drop(kek);
     let session = VaultSession::new(key, vault_id);
 
     let scan = workspace::scan_workspace(&workspace.root)?;
@@ -255,6 +264,18 @@ pub fn ensure_encrypted(root: &Path, session: &VaultSession) -> Result<(), Strin
 /// Read and validate the marker, or return `None` when there is none.
 fn read_metadata(root: &Path) -> Result<Option<VaultMetadata>, String> {
     let marker = root.join(MARKER_FILE);
+    let size = match fs::metadata(&marker) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!("Could not read the library marker: {error}"));
+        }
+    };
+    if size > MAX_MARKER_SIZE {
+        return Err(format!(
+            "The library marker is too large (maximum {MAX_MARKER_SIZE} bytes)."
+        ));
+    }
     let bytes = match fs::read(&marker) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -360,10 +381,22 @@ fn migrate_notes(root: &Path, session: &VaultSession, entries: &[NoteEntry]) -> 
     Ok(())
 }
 
-/// Check just the first bytes of a file to avoid reading whole sealed notes.
+/// Check the size and first bytes of a file to avoid reading whole sealed notes.
+///
+/// A file only counts as sealed when it is long enough to contain the magic,
+/// nonce, and authentication tag. A short plaintext file that merely starts
+/// with the magic must still be migrated.
 fn has_vault_magic(path: &Path, relative: &str) -> Result<bool, String> {
+    const MIN_SEALED_LEN: usize = crypto::MAGIC.len() + crypto::NONCE_LEN + crypto::TAG_LEN;
     let file = fs::File::open(path)
         .map_err(|error| format!("Could not read note \"{relative}\": {error}"))?;
+    let len = file
+        .metadata()
+        .map_err(|error| format!("Could not read note \"{relative}\": {error}"))?
+        .len();
+    if len < MIN_SEALED_LEN as u64 {
+        return Ok(false);
+    }
     let mut prefix = Vec::with_capacity(crypto::MAGIC.len());
     file.take(crypto::MAGIC.len() as u64)
         .read_to_end(&mut prefix)
@@ -383,6 +416,10 @@ mod tests {
         bytes.windows(needle.len()).any(|w| w == needle)
     }
 
+    fn pw(value: &str) -> Zeroizing<String> {
+        Zeroizing::new(value.to_string())
+    }
+
     #[test]
     fn inspect_reports_needs_creation_with_note_count() {
         let dir = TestDir::new("vault-inspect");
@@ -398,7 +435,7 @@ mod tests {
         let dir = TestDir::new("vault-create");
         dir.write("a.md", "alpha-secret");
         dir.write("notes/b.md", "beta-secret");
-        let opened = create(dir.path(), "correct horse").unwrap();
+        let opened = create(dir.path(), pw("correct horse")).unwrap();
         assert_eq!(inspect(dir.path()).unwrap().kind, VaultKind::Ready);
         assert!(dir.path().join(MARKER_FILE).is_file());
         for path in ["a.md", "notes/b.md"] {
@@ -418,7 +455,7 @@ mod tests {
     #[test]
     fn create_supports_an_empty_folder() {
         let dir = TestDir::new("vault-empty");
-        let opened = create(dir.path(), "pw").unwrap();
+        let opened = create(dir.path(), pw("pw")).unwrap();
         assert_eq!(inspect(dir.path()).unwrap().kind, VaultKind::Ready);
         assert_eq!(inspect(dir.path()).unwrap().note_count, 0);
         assert!(opened.scan.notes.is_empty());
@@ -428,9 +465,9 @@ mod tests {
     fn unlock_rejects_wrong_password_and_accepts_the_right_one() {
         let dir = TestDir::new("vault-unlock");
         dir.write("a.md", "alpha");
-        create(dir.path(), "right-password").unwrap();
-        assert!(unlock(dir.path(), "wrong-password").is_err());
-        let opened = unlock(dir.path(), "right-password").unwrap();
+        create(dir.path(), pw("right-password")).unwrap();
+        assert!(unlock(dir.path(), pw("wrong-password")).is_err());
+        let opened = unlock(dir.path(), pw("right-password")).unwrap();
         assert_eq!(
             crate::notes::read_note(dir.path(), "a.md", &opened.session)
                 .unwrap()
@@ -443,9 +480,9 @@ mod tests {
     fn unlock_encrypts_plaintext_files_added_later() {
         let dir = TestDir::new("vault-late-plaintext");
         dir.write("a.md", "alpha");
-        create(dir.path(), "pw").unwrap();
+        create(dir.path(), pw("pw")).unwrap();
         dir.write("late.md", "later-secret");
-        let opened = unlock(dir.path(), "pw").unwrap();
+        let opened = unlock(dir.path(), pw("pw")).unwrap();
         assert!(crypto::is_sealed(
             &fs::read(dir.path().join("late.md")).unwrap()
         ));
@@ -458,10 +495,37 @@ mod tests {
     }
 
     #[test]
+    fn short_plaintext_starting_with_the_magic_is_still_sealed() {
+        let dir = TestDir::new("vault-short-magic");
+        let _opened = create(dir.path(), pw("pw")).unwrap();
+        dir.write("short.md", "MOJIANM1");
+        let opened = unlock(dir.path(), pw("pw")).unwrap();
+        assert!(crypto::is_sealed(
+            &fs::read(dir.path().join("short.md")).unwrap()
+        ));
+        assert_eq!(
+            crate::notes::read_note(dir.path(), "short.md", &opened.session)
+                .unwrap()
+                .content,
+            "MOJIANM1"
+        );
+    }
+
+    #[test]
+    fn rejects_markers_larger_than_the_size_cap() {
+        let dir = TestDir::new("vault-oversized-marker");
+        dir.write("a.md", "alpha");
+        let oversized = vec![b' '; MAX_MARKER_SIZE as usize + 1];
+        fs::write(dir.path().join(MARKER_FILE), oversized).unwrap();
+        let error = inspect(dir.path()).unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
     fn resumes_a_migrating_vault_without_double_encryption() {
         let dir = TestDir::new("vault-resume");
         dir.write("a.md", "first");
-        let _opened = create(dir.path(), "pw").unwrap();
+        let _opened = create(dir.path(), pw("pw")).unwrap();
         let original = fs::read(dir.path().join("a.md")).unwrap();
 
         let marker = dir.path().join(MARKER_FILE);
@@ -471,7 +535,7 @@ mod tests {
         fs::write(&marker, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
         dir.write("late.md", "second");
 
-        let resumed = unlock(dir.path(), "pw").unwrap();
+        let resumed = unlock(dir.path(), pw("pw")).unwrap();
         assert_eq!(resumed.scan.notes.len(), 2);
         assert_eq!(
             fs::read(dir.path().join("a.md")).unwrap(),
@@ -494,7 +558,7 @@ mod tests {
     fn rejects_unknown_versions_and_corrupt_markers() {
         let dir = TestDir::new("vault-version");
         dir.write("a.md", "alpha");
-        create(dir.path(), "pw").unwrap();
+        create(dir.path(), pw("pw")).unwrap();
         let marker = dir.path().join(MARKER_FILE);
 
         let mut json: serde_json::Value =
@@ -502,7 +566,7 @@ mod tests {
         json["version"] = serde_json::json!(2);
         fs::write(&marker, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
         assert!(inspect(dir.path()).is_err());
-        assert!(unlock(dir.path(), "pw").is_err());
+        assert!(unlock(dir.path(), pw("pw")).is_err());
 
         fs::write(&marker, b"{not json").unwrap();
         assert!(inspect(dir.path()).is_err());
@@ -512,7 +576,7 @@ mod tests {
     fn rejects_an_unknown_kdf_algorithm() {
         let dir = TestDir::new("vault-kdf-algorithm");
         dir.write("a.md", "alpha");
-        create(dir.path(), "pw").unwrap();
+        create(dir.path(), pw("pw")).unwrap();
         let marker = dir.path().join(MARKER_FILE);
 
         let mut json: serde_json::Value =
@@ -520,15 +584,15 @@ mod tests {
         json["kdf"]["algorithm"] = serde_json::json!("scrypt");
         fs::write(&marker, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
         assert!(inspect(dir.path()).is_err());
-        assert!(unlock(dir.path(), "pw").is_err());
+        assert!(unlock(dir.path(), pw("pw")).is_err());
     }
 
     #[test]
     fn create_refuses_an_existing_vault_and_marker_is_not_scanned() {
         let dir = TestDir::new("vault-existing");
         dir.write("a.md", "alpha");
-        create(dir.path(), "pw").unwrap();
-        assert!(create(dir.path(), "pw2").is_err());
+        create(dir.path(), pw("pw")).unwrap();
+        assert!(create(dir.path(), pw("pw2")).is_err());
         let scan = workspace::scan_workspace(dir.path()).unwrap();
         assert_eq!(scan.notes.len(), 1);
         assert!(scan.notes.iter().all(|note| note.path != MARKER_FILE));
@@ -543,7 +607,7 @@ mod tests {
     fn marker_uses_the_fixed_format_fields_and_private_permissions() {
         let dir = TestDir::new("vault-marker-format");
         dir.write("a.md", "alpha");
-        create(dir.path(), "pw").unwrap();
+        create(dir.path(), pw("pw")).unwrap();
 
         let marker = dir.path().join(MARKER_FILE);
         let json: serde_json::Value =

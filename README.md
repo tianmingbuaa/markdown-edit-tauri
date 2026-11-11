@@ -37,7 +37,7 @@
 - **旧明文可能残留**：原地加密只能保证“当前文件内容”被替换。旧明文仍可能存在于系统备份、云盘历史版本、文件系统未擦除块或 SSD 磨损均衡区中；需要彻底消除时请自行清理这些副本。
 - **首版能力边界**：不支持修改密码、恢复密钥、多密码解锁或自动锁定；应用运行期间密钥驻留内存，不防进程内存转储、交换分区、崩溃转储、调试器或截屏。
 
-磁盘格式上，库根目录有一个隐藏标记文件 `.mojian-vault.json`（含 Argon2id 参数、salt、vaultId 与包裹后的数据密钥），每个 `.md` 文件以 `MOJIANM1` 魔数开头，后接 nonce 与密文。解锁、切换库或刷新时，扫描到的明文 `.md` 会被自动补加密；已加密文件不会重复加密。启动应用始终显示欢迎页，不会自动打开上次的库。
+磁盘格式上，库根目录有一个隐藏标记文件 `.mojian-vault.json`（含 Argon2id 参数、salt、vaultId 与包裹后的数据密钥），加密后的笔记文件以 `MOJIANM1` 开头，后接 nonce 与密文。加密与迁移仅覆盖扫描到的目录树下可见、非噪声的 `.md` / `.markdown` 文件；隐藏文件、被忽略的目录（`node_modules`、`target`、`dist`、`build` 等）以及超过 32 层的文件不在加密库迁移范围内。之后从外部新增的明文文件会在下次解锁 / 刷新时补加密；已加密文件不会重复加密。启动应用始终显示欢迎页，不会自动打开上次的库。
 
 ## 笔记库管理
 
@@ -181,8 +181,8 @@ cargo test
 - 前端不能直接访问任意路径：当前活动加密库是 Rust 端受管状态；前端只拿明文内容，不接触密钥或密文。
 - 加解密全部在 Rust 后端完成：Argon2id（`memoryKiB` 65536、`iterations` 3、`parallelism` 1）派生 KEK，包裹随机 DEK；笔记用 DEK 以 XChaCha20-Poly1305 加密，每次保存生成新的 24 字节 nonce。
 - 文件密文以 `MOJIANM1` 魔数开头，AAD 为 `MAGIC || vaultId`；跨库拷贝、密文篡改与损坏会认证失败。密钥包裹 AAD 为 `MOJIAN-KEY || vaultId`。
-- 库标记 `.mojian-vault.json` 原子替换写入，Unix 下权限为 `0600`；读取时校验 version、算法、KDF 参数范围与 base64 结构，损坏或恶意标记不会造成资源耗尽。
-- 密码以 `Zeroizing<String>` 持有并在派生后立即释放；DEK 存于实现 `ZeroizeOnDrop` 的 `VaultKey`。解锁失败统一提示“密码错误，或库文件已损坏”，且不会替换当前活动库。
+- 库标记 `.mojian-vault.json` 原子替换写入，Unix 下权限为 `0600`；读取时校验 version、算法、KDF 参数范围与 base64 结构，标记文件大小上限为 64 KiB，以限制损坏或恶意标记的资源消耗。
+- 密码以 `Zeroizing<String>` 持有并在派生后立即释放；DEK 存于 `VaultKey`，其手动实现的 `Drop` 会调用 `zeroize`。解锁失败统一提示 `Could not unlock the library: the password is wrong or the vault is damaged.`，且不会替换当前活动库。
 - 迁移先写 `state: migrating` 标记再逐篇加密，因此中断后不会把已加密文件重复加密；迁移不会把明文写入临时文件，临时文件始终是密文。
 - 笔记路径必须是工作区内的相对路径；拒绝绝对路径、`C:\` / UNC、反斜杠、`.`、`..`、空段与非 Markdown 扩展名。
 - 新建 / 重命名的名称必须是单一路径段：拒绝斜杠、空名称、隐藏前缀、`.` / `..`、控制字符、Windows 保留设备名、尾随空格 / 点号，并保持文件扩展名为 `.md` / `.markdown`。
