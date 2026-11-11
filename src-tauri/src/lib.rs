@@ -5,6 +5,7 @@
 //! workspace in managed state and exposes commands for scanning, reading, and
 //! saving notes. All path validation lives in [`security`].
 
+mod crypto;
 mod notes;
 mod security;
 mod workspace;
