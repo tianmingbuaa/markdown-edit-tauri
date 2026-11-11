@@ -8,6 +8,7 @@
 mod crypto;
 mod notes;
 mod security;
+mod vault;
 mod workspace;
 
 #[cfg(test)]
@@ -55,7 +56,9 @@ impl AppState {
 #[tauri::command]
 async fn open_workspace(path: String, state: State<'_, AppState>) -> Result<WorkspaceInfo, String> {
     let (workspace, scan) = tauri::async_runtime::spawn_blocking(move || {
-        workspace::open_workspace_folder(Path::new(&path))
+        let workspace = workspace::workspace_from_root(Path::new(&path))?;
+        let scan = workspace::scan_workspace(&workspace.root)?;
+        Ok::<_, String>((workspace, scan))
     })
     .await
     .map_err(|error| format!("Workspace scan failed: {error}"))??;
