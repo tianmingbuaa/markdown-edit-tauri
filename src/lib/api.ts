@@ -15,6 +15,14 @@ export interface WorkspaceInfo {
   folders: string[];
 }
 
+export type VaultKind = "ready" | "migrating" | "needsCreation";
+
+export interface VaultInspection {
+  kind: VaultKind;
+  name: string;
+  noteCount: number;
+}
+
 export interface NoteDocument {
   path: string;
   content: string;
@@ -29,6 +37,18 @@ export interface SavedNote {
 export const workspaceApi = {
   open(path: string): Promise<WorkspaceInfo> {
     return invoke<WorkspaceInfo>("open_workspace", { path });
+  },
+
+  inspect(path: string): Promise<VaultInspection> {
+    return invoke<VaultInspection>("inspect_workspace", { path });
+  },
+
+  openVault(path: string, password: string): Promise<WorkspaceInfo> {
+    return invoke<WorkspaceInfo>("open_vault", { path, password });
+  },
+
+  createVault(path: string, password: string): Promise<WorkspaceInfo> {
+    return invoke<WorkspaceInfo>("create_vault", { path, password });
   },
 
   rescan(): Promise<WorkspaceInfo> {

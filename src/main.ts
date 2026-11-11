@@ -184,6 +184,7 @@ class MojianApp {
   async init(): Promise<void> {
     hydrateIcons();
     this.collectDom();
+    storage.purgeLegacyMetadata();
     this.dark = document.documentElement.dataset.theme === "dark";
     this.bindUi();
     this.bindKeyboard();
@@ -208,7 +209,6 @@ class MojianApp {
     this.updateWelcome();
 
     this.app.dataset.ready = "true";
-    void this.restoreLastWorkspace();
   }
 
   private collectDom(): void {
@@ -776,37 +776,6 @@ class MojianApp {
     if (persist) storage.setSidebarCollapsed(collapsed);
   }
 
-  private async restoreLastWorkspace(): Promise<void> {
-    const last = storage.getLastWorkspace();
-    if (!last) {
-      this.updateWelcome();
-      return;
-    }
-
-    this.setWorkspaceBusy(true);
-    this.fileTree.innerHTML = `
-      <div class="tree-skeleton" aria-hidden="true">
-        <span></span><span></span><span></span><span></span>
-      </div>`;
-
-    try {
-      const info = await workspaceApi.open(last);
-      this.adoptWorkspace(info);
-      this.fileTree.scrollTop = 0;
-    } catch (error) {
-      storage.setLastWorkspace(null);
-      this.setWorkspaceBusy(false);
-      this.renderTree();
-      this.updateWorkspaceChrome();
-      this.updateWelcome();
-      this.showToast({
-        kind: "info",
-        message: `未能恢复上次的笔记库：${errorMessage(error)}`,
-        duration: 6500,
-      });
-    }
-  }
-
   private adoptWorkspace(info: WorkspaceInfo): void {
     this.workspace = info;
     this.tree = buildFileTree(info.notes, info.folders ?? []);
@@ -824,7 +793,6 @@ class MojianApp {
     this.setWorkspaceBusy(false);
     this.setSaveState("idle");
     this.setDirtyDot(false);
-    storage.setLastWorkspace(info.path);
 
     this.updateWorkspaceChrome();
     this.renderTree();
@@ -881,7 +849,7 @@ class MojianApp {
         '<span class="welcome__eyebrow-rule" aria-hidden="true"></span>MOJIAN · MARKDOWN STUDIO';
       this.welcomeTitle.innerHTML = "把思绪，<br /><em>写进纸间。</em>";
       this.welcomeDescription.textContent =
-        "打开一个本地文件夹，把它变成你的 Markdown 笔记库。选择、书写，余下的一切交给自动保存。";
+        "打开或创建一个加密笔记库。笔记在磁盘上以密文保存，只有输入密码才能读取。";
       return;
     }
 
