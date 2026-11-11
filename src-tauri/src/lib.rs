@@ -89,6 +89,11 @@ async fn create_folder(
         .map_err(|error| format!("Creating the folder failed: {error}"))?
 }
 
+// Temporary bridge: removed when Task 4 wires vault sessions into AppState.
+fn require_vault_session() -> Result<crypto::VaultSession, String> {
+    Err("No encrypted vault is open.".to_string())
+}
+
 /// Create one new empty Markdown note below a workspace-relative parent folder.
 #[tauri::command]
 async fn create_note(
@@ -96,10 +101,13 @@ async fn create_note(
     name: String,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
+    let session = require_vault_session()?;
     let root = state.require()?.root;
-    tauri::async_runtime::spawn_blocking(move || notes::create_note(&root, &parent, &name))
-        .await
-        .map_err(|error| format!("Creating the note failed: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        notes::create_note(&root, &parent, &name, &session)
+    })
+    .await
+    .map_err(|error| format!("Creating the note failed: {error}"))?
 }
 
 /// Rename one existing note within its current folder.
@@ -127,8 +135,9 @@ async fn delete_note(path: String, state: State<'_, AppState>) -> Result<(), Str
 /// Read one note on demand by its workspace-relative path.
 #[tauri::command]
 async fn read_note(path: String, state: State<'_, AppState>) -> Result<NoteDocument, String> {
+    let session = require_vault_session()?;
     let root = state.require()?.root;
-    tauri::async_runtime::spawn_blocking(move || notes::read_note(&root, &path))
+    tauri::async_runtime::spawn_blocking(move || notes::read_note(&root, &path, &session))
         .await
         .map_err(|error| format!("Reading the note failed: {error}"))?
 }
@@ -140,8 +149,9 @@ async fn save_note(
     content: String,
     state: State<'_, AppState>,
 ) -> Result<SavedNote, String> {
+    let session = require_vault_session()?;
     let root = state.require()?.root;
-    tauri::async_runtime::spawn_blocking(move || notes::save_note(&root, &path, &content))
+    tauri::async_runtime::spawn_blocking(move || notes::save_note(&root, &path, &content, &session))
         .await
         .map_err(|error| format!("Saving the note failed: {error}"))?
 }

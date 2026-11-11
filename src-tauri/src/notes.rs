@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
+use crate::crypto::{self, VaultSession};
 use crate::security;
 use crate::workspace::modified_ms;
 
@@ -33,11 +34,23 @@ pub struct SavedNote {
 }
 
 /// Read one existing Markdown file inside the active workspace.
-pub fn read_note(root: &Path, raw_path: &str) -> Result<NoteDocument, String> {
+pub fn read_note(
+    root: &Path,
+    raw_path: &str,
+    session: &VaultSession,
+) -> Result<NoteDocument, String> {
     let note = security::resolve_note(root, raw_path)?;
     let bytes = fs::read(&note.absolute)
         .map_err(|error| format!("Could not read note \"{}\": {error}", note.relative))?;
-    let content = String::from_utf8(bytes).map_err(|_| {
+    if !crypto::is_sealed(&bytes) {
+        return Err(format!(
+            "Note \"{}\" is not an encrypted library note.",
+            note.relative
+        ));
+    }
+    let plaintext = crypto::open(&session.key, &session.vault_id, &bytes)
+        .map_err(|error| format!("Could not decrypt note \"{}\": {error}", note.relative))?;
+    let content = String::from_utf8(plaintext).map_err(|_| {
         format!(
             "Note \"{}\" is not valid UTF-8 text and cannot be displayed.",
             note.relative
@@ -55,45 +68,50 @@ pub fn read_note(root: &Path, raw_path: &str) -> Result<NoteDocument, String> {
 
 /// Save one existing Markdown file inside the active workspace.
 ///
-/// The content is written to a hidden temporary file in the note's directory,
-/// given the original file permissions, flushed to disk, and then renamed over
-/// the target so readers never observe a partially written note.
-pub fn save_note(root: &Path, raw_path: &str, content: &str) -> Result<SavedNote, String> {
+/// The content is sealed before it reaches disk, then written to a hidden
+/// temporary file in the note's directory, given the original file permissions,
+/// flushed to disk, and renamed over the target so readers never observe a
+/// partially written note.
+pub fn save_note(
+    root: &Path,
+    raw_path: &str,
+    content: &str,
+    session: &VaultSession,
+) -> Result<SavedNote, String> {
     let note = security::resolve_note(root, raw_path)?;
     let metadata = fs::metadata(&note.absolute)
         .map_err(|error| format!("Could not inspect note \"{}\": {error}", note.relative))?;
-    let parent = note
-        .absolute
-        .parent()
-        .ok_or_else(|| format!("Note \"{}\" does not have a parent folder.", note.relative))?;
-    let temp_path = unique_temp_path(parent);
     let permissions = metadata.permissions();
+    let sealed = crypto::seal(&session.key, &session.vault_id, content.as_bytes())?;
 
-    match write_file_atomically(&temp_path, &note.absolute, content.as_bytes(), permissions) {
-        Ok(metadata) => Ok(SavedNote {
-            modified: modified_ms(&metadata),
-            size: metadata.len(),
-        }),
-        Err(error) => {
-            let _ = fs::remove_file(&temp_path);
-            Err(error)
-        }
-    }
+    let metadata = replace_file_atomically(&note.absolute, &sealed, permissions)?;
+    Ok(SavedNote {
+        modified: modified_ms(&metadata),
+        size: metadata.len(),
+    })
 }
 
 /// Create one new empty Markdown file below `raw_parent`.
 ///
 /// `raw_parent` is a workspace-relative folder path (`""` is the root) and
 /// `raw_name` is a complete Markdown file name. `create_new` guarantees the
-/// target is never overwritten. Returns the new relative path.
-pub fn create_note(root: &Path, raw_parent: &str, raw_name: &str) -> Result<String, String> {
+/// target is never overwritten. The empty plaintext is sealed before it reaches
+/// disk, so the file is never a 0-byte plaintext note. Returns the new relative
+/// path.
+pub fn create_note(
+    root: &Path,
+    raw_parent: &str,
+    raw_name: &str,
+    session: &VaultSession,
+) -> Result<String, String> {
     security::validate_note_file_name(raw_name)?;
     let parent = security::resolve_parent_dir(root, raw_parent)?;
     let target = parent.absolute.join(raw_name);
     let relative = security::join_relative(&parent.relative, raw_name);
     security::ensure_vacant(&target, raw_name, &parent.relative)?;
 
-    let file = OpenOptions::new()
+    let sealed = crypto::seal(&session.key, &session.vault_id, b"")?;
+    let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&target)
@@ -107,6 +125,18 @@ pub fn create_note(root: &Path, raw_parent: &str, raw_name: &str) -> Result<Stri
                 format!("Could not create note \"{relative}\": {error}")
             }
         })?;
+
+    let write_result = (|| -> std::io::Result<()> {
+        file.write_all(&sealed)?;
+        file.flush()?;
+        file.sync_all()?;
+        Ok(())
+    })();
+    if let Err(error) = write_result {
+        drop(file);
+        let _ = fs::remove_file(&target);
+        return Err(format!("Could not create note \"{relative}\": {error}"));
+    }
     drop(file);
 
     Ok(relative)
@@ -169,17 +199,26 @@ fn relative_parent(relative: &str) -> String {
         .unwrap_or_default()
 }
 
-fn write_file_atomically(
-    temp_path: &Path,
+/// Replace `target` with `bytes` through a hidden temporary file and a rename.
+///
+/// The caller is responsible for passing bytes that are already safe to leave
+/// on disk: temporary files are written with exactly these bytes, so note saves
+/// and vault migrations must pass ciphertext, never plaintext.
+pub(crate) fn replace_file_atomically(
     target: &Path,
     bytes: &[u8],
     permissions: fs::Permissions,
 ) -> Result<fs::Metadata, String> {
     let display = target.display();
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("Note \"{display}\" does not have a parent folder."))?;
+    let temp_path = unique_temp_path(parent);
+
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(temp_path)
+        .open(&temp_path)
         .map_err(|error| {
             format!("Could not prepare a temporary file for note \"{display}\": {error}")
         })?;
@@ -194,13 +233,17 @@ fn write_file_atomically(
 
     if let Err(error) = write_result {
         drop(file);
-        let _ = fs::remove_file(temp_path);
+        let _ = fs::remove_file(&temp_path);
         return Err(format!("Could not write note \"{display}\": {error}"));
     }
     drop(file);
 
-    fs::rename(temp_path, target)
-        .map_err(|error| format!("Could not replace note \"{display}\" atomically: {error}"))?;
+    if let Err(error) = fs::rename(&temp_path, target) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(format!(
+            "Could not replace note \"{display}\" atomically: {error}"
+        ));
+    }
 
     fs::metadata(target)
         .map_err(|error| format!("Note \"{display}\" was saved but could not be verified: {error}"))
@@ -224,26 +267,58 @@ fn unique_temp_path(parent: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::{self, VaultKey, VaultSession};
     use crate::test_support::TestDir;
+
+    fn test_session() -> VaultSession {
+        VaultSession::new(VaultKey::from_bytes([7u8; 32]), [9u8; 16])
+    }
+
+    fn write_sealed(root: &Path, relative: &str, content: &str, session: &VaultSession) -> PathBuf {
+        write_sealed_bytes(root, relative, content.as_bytes(), session)
+    }
+
+    fn write_sealed_bytes(
+        root: &Path,
+        relative: &str,
+        content: &[u8],
+        session: &VaultSession,
+    ) -> PathBuf {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(
+            &path,
+            crypto::seal(&session.key, &session.vault_id, content).unwrap(),
+        )
+        .unwrap();
+        path
+    }
 
     #[test]
     fn reads_and_saves_a_note_roundtrip() {
         let workspace = TestDir::new("roundtrip");
-        workspace.write("notes/launch.md", "# Launch\n");
+        let session = test_session();
+        write_sealed(workspace.path(), "notes/launch.md", "# Launch\n", &session);
 
-        let document = read_note(workspace.path(), "notes/launch.md").unwrap();
+        let document = read_note(workspace.path(), "notes/launch.md", &session).unwrap();
         assert_eq!(document.path, "notes/launch.md");
         assert_eq!(document.content, "# Launch\n");
         assert!(document.modified > 0);
 
         let updated = "# Launch\n\nUpdated body.\n";
-        let saved = save_note(workspace.path(), "notes/launch.md", updated).unwrap();
-        assert_eq!(saved.size, updated.len() as u64);
+        let saved = save_note(workspace.path(), "notes/launch.md", updated, &session).unwrap();
+        assert!(saved.size > updated.len() as u64);
         assert!(saved.modified > 0);
 
-        let document = read_note(workspace.path(), "notes/launch.md").unwrap();
+        let document = read_note(workspace.path(), "notes/launch.md", &session).unwrap();
         assert_eq!(document.path, "notes/launch.md");
         assert_eq!(document.content, updated);
+
+        // The file on disk is ciphertext, not the plaintext that was saved.
+        let raw = fs::read(workspace.path().join("notes/launch.md")).unwrap();
+        assert!(crypto::is_sealed(&raw));
 
         // Atomic save leaves no temporary file behind.
         let entries = fs::read_dir(workspace.path().join("notes"))
@@ -255,21 +330,46 @@ mod tests {
     }
 
     #[test]
+    fn disk_bytes_are_ciphertext_with_the_magic() {
+        let workspace = TestDir::new("ciphertext");
+        let session = test_session();
+        write_sealed(workspace.path(), "note.md", "TOP-SECRET-PHRASE", &session);
+        let raw = fs::read(workspace.path().join("note.md")).unwrap();
+        assert!(crypto::is_sealed(&raw));
+        assert!(
+            !raw.windows(b"TOP-SECRET-PHRASE".len())
+                .any(|w| w == b"TOP-SECRET-PHRASE")
+        );
+    }
+
+    #[test]
     fn refuses_missing_and_non_markdown_notes() {
         let workspace = TestDir::new("missing");
-        workspace.write("note.md", "# Note");
-        workspace.write("note.txt", "text");
+        let session = test_session();
+        write_sealed(workspace.path(), "note.md", "# Note", &session);
+        write_sealed(workspace.path(), "note.txt", "text", &session);
 
-        assert!(read_note(workspace.path(), "missing.md").is_err());
-        assert!(read_note(workspace.path(), "note.txt").is_err());
-        assert!(save_note(workspace.path(), "missing.md", "new").is_err());
-        assert!(save_note(workspace.path(), "note.txt", "new").is_err());
+        assert!(read_note(workspace.path(), "missing.md", &session).is_err());
+        assert!(read_note(workspace.path(), "note.txt", &session).is_err());
+        assert!(save_note(workspace.path(), "missing.md", "new", &session).is_err());
+        assert!(save_note(workspace.path(), "note.txt", "new", &session).is_err());
+    }
+
+    #[test]
+    fn refuses_plaintext_notes_in_an_encrypted_library() {
+        let workspace = TestDir::new("plaintext-refused");
+        let session = test_session();
+        workspace.write("plain.md", "# plain");
+
+        let error = read_note(workspace.path(), "plain.md", &session).unwrap_err();
+        assert!(error.contains("encrypted"), "{error}");
     }
 
     #[test]
     fn refuses_to_save_outside_the_workspace() {
         let workspace = TestDir::new("outside-save");
-        workspace.write("safe.md", "# Safe");
+        let session = test_session();
+        write_sealed(workspace.path(), "safe.md", "# Safe", &session);
         let outside = TestDir::new("outside-save-target");
         let secret = outside.write("secret.md", "original");
         let absolute_secret = secret.to_string_lossy().into_owned();
@@ -279,7 +379,7 @@ mod tests {
             "notes/../../secret.md",
             absolute_secret.as_str(),
         ] {
-            assert!(save_note(workspace.path(), raw, "hacked").is_err());
+            assert!(save_note(workspace.path(), raw, "hacked", &session).is_err());
         }
         assert_eq!(fs::read_to_string(&secret).unwrap(), "original");
     }
@@ -290,13 +390,14 @@ mod tests {
         use std::os::unix::fs::symlink;
 
         let workspace = TestDir::new("outside-symlink");
-        workspace.write("safe.md", "# Safe");
+        let session = test_session();
+        write_sealed(workspace.path(), "safe.md", "# Safe", &session);
         let outside = TestDir::new("outside-symlink-target");
         let secret = outside.write("secret.md", "original");
         symlink(&secret, workspace.path().join("escape.md")).unwrap();
 
-        assert!(read_note(workspace.path(), "escape.md").is_err());
-        assert!(save_note(workspace.path(), "escape.md", "hacked").is_err());
+        assert!(read_note(workspace.path(), "escape.md", &session).is_err());
+        assert!(save_note(workspace.path(), "escape.md", "hacked", &session).is_err());
         assert_eq!(fs::read_to_string(&secret).unwrap(), "original");
     }
 
@@ -306,10 +407,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let workspace = TestDir::new("permissions");
-        let note = workspace.write("permissions.md", "# Old\n");
+        let session = test_session();
+        let note = write_sealed(workspace.path(), "permissions.md", "# Old\n", &session);
         fs::set_permissions(&note, fs::Permissions::from_mode(0o640)).unwrap();
 
-        save_note(workspace.path(), "permissions.md", "# New\n").unwrap();
+        save_note(workspace.path(), "permissions.md", "# New\n", &session).unwrap();
 
         let mode = fs::metadata(&note).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o640);
@@ -318,33 +420,70 @@ mod tests {
     #[test]
     fn rejects_invalid_utf8_content_with_a_readable_error() {
         let workspace = TestDir::new("invalid-utf8");
-        fs::write(workspace.path().join("binary.md"), [0xff, 0xfe, 0x00]).unwrap();
+        let session = test_session();
+        write_sealed_bytes(workspace.path(), "binary.md", &[0xff, 0xfe, 0x00], &session);
 
-        let error = read_note(workspace.path(), "binary.md").unwrap_err();
+        let error = read_note(workspace.path(), "binary.md", &session).unwrap_err();
         assert!(error.contains("UTF-8"), "{error}");
+    }
+
+    #[test]
+    fn creates_an_empty_note_that_decrypts_to_empty() {
+        let workspace = TestDir::new("empty-note");
+        let session = test_session();
+
+        let relative = create_note(workspace.path(), "", "fresh.md", &session).unwrap();
+        assert_eq!(relative, "fresh.md");
+        assert!(
+            fs::metadata(workspace.path().join("fresh.md"))
+                .unwrap()
+                .len()
+                > 0
+        );
+        assert_eq!(
+            read_note(workspace.path(), "fresh.md", &session)
+                .unwrap()
+                .content,
+            ""
+        );
     }
 
     #[test]
     fn creates_an_empty_note_and_rejects_duplicates_and_bad_requests() {
         let workspace = TestDir::new("create-note");
-        workspace.write("notes/existing.md", "existing");
+        let session = test_session();
+        write_sealed(workspace.path(), "notes/existing.md", "existing", &session);
         let root = workspace.path();
 
-        let relative = create_note(root, "notes", "fresh.markdown").unwrap();
+        let relative = create_note(root, "notes", "fresh.markdown", &session).unwrap();
         assert_eq!(relative, "notes/fresh.markdown");
         let created = root.join("notes/fresh.markdown");
         assert!(created.is_file());
-        assert_eq!(fs::metadata(&created).unwrap().len(), 0);
+        assert!(fs::metadata(&created).unwrap().len() > 0);
+        assert_eq!(
+            read_note(root, "notes/fresh.markdown", &session)
+                .unwrap()
+                .content,
+            ""
+        );
 
-        assert_eq!(create_note(root, "", "root.md").unwrap(), "root.md");
-        assert_eq!(fs::metadata(root.join("root.md")).unwrap().len(), 0);
-        assert_eq!(create_note(root, "", "UPPER.MD").unwrap(), "UPPER.MD");
+        assert_eq!(
+            create_note(root, "", "root.md", &session).unwrap(),
+            "root.md"
+        );
+        let root_size = fs::metadata(root.join("root.md")).unwrap().len();
+        assert!(root_size > 0);
+        assert_eq!(read_note(root, "root.md", &session).unwrap().content, "");
+        assert_eq!(
+            create_note(root, "", "UPPER.MD", &session).unwrap(),
+            "UPPER.MD"
+        );
 
         // Neither an existing note nor an existing folder is overwritten.
-        assert!(create_note(root, "notes", "existing.md").is_err());
-        assert!(create_note(root, "notes", "fresh.markdown").is_err());
+        assert!(create_note(root, "notes", "existing.md", &session).is_err());
+        assert!(create_note(root, "notes", "fresh.markdown", &session).is_err());
         fs::create_dir_all(root.join("directory.md")).unwrap();
-        assert!(create_note(root, "", "directory.md").is_err());
+        assert!(create_note(root, "", "directory.md", &session).is_err());
         assert!(root.join("directory.md").is_dir());
 
         // Parent must exist and must not traverse or be absolute.
@@ -362,7 +501,7 @@ mod tests {
             "notes\\nested",
         ] {
             assert!(
-                create_note(root, parent, "new.md").is_err(),
+                create_note(root, parent, "new.md", &session).is_err(),
                 "expected invalid parent {parent:?}"
             );
         }
@@ -388,33 +527,36 @@ mod tests {
             "note\0.md",
         ] {
             assert!(
-                create_note(root, "", name).is_err(),
+                create_note(root, "", name, &session).is_err(),
                 "expected invalid name {name:?}"
             );
         }
 
         // An absolute path supplied as the name is rejected too.
         let absolute_name = root.join("absolute.md").to_string_lossy().into_owned();
-        assert!(create_note(root, "", &absolute_name).is_err());
+        assert!(create_note(root, "", &absolute_name, &session).is_err());
         assert!(!root.join("absolute.md").exists());
     }
 
     #[test]
     fn creates_notes_only_inside_the_active_workspace() {
         let workspace = TestDir::new("create-note-safety");
-        workspace.write("safe.md", "# Safe");
+        let session = test_session();
+        write_sealed(workspace.path(), "safe.md", "# Safe", &session);
         let outside = TestDir::new("create-note-safety-outside");
 
         let absolute_parent = outside.path().to_string_lossy().into_owned();
         let escaped = outside.path().join("created.md");
-        assert!(create_note(workspace.path(), &absolute_parent, "created.md").is_err());
+        assert!(create_note(workspace.path(), &absolute_parent, "created.md", &session).is_err());
         assert!(!escaped.exists());
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;
             symlink(outside.path(), workspace.path().join("escape-folder")).unwrap();
-            assert!(create_note(workspace.path(), "escape-folder", "created.md").is_err());
+            assert!(
+                create_note(workspace.path(), "escape-folder", "created.md", &session).is_err()
+            );
             assert!(!escaped.exists());
         }
     }
@@ -422,16 +564,24 @@ mod tests {
     #[test]
     fn renames_a_note_in_place_and_rejects_unsafe_targets() {
         let workspace = TestDir::new("rename");
-        workspace.write("notes/old.md", "# Original");
-        workspace.write("notes/taken.md", "# Taken");
-        workspace.write("other/elsewhere.md", "# Elsewhere");
+        let session = test_session();
+        write_sealed(workspace.path(), "notes/old.md", "# Original", &session);
+        write_sealed(workspace.path(), "notes/taken.md", "# Taken", &session);
+        write_sealed(
+            workspace.path(),
+            "other/elsewhere.md",
+            "# Elsewhere",
+            &session,
+        );
         let root = workspace.path();
 
         let relative = rename_note(root, "notes/old.md", "new.markdown").unwrap();
         assert_eq!(relative, "notes/new.markdown");
         assert!(!root.join("notes/old.md").exists());
         assert_eq!(
-            fs::read_to_string(root.join("notes/new.markdown")).unwrap(),
+            read_note(root, "notes/new.markdown", &session)
+                .unwrap()
+                .content,
             "# Original"
         );
 
@@ -441,18 +591,22 @@ mod tests {
             "notes/renamed.MD"
         );
         assert_eq!(
-            fs::read_to_string(root.join("notes/renamed.MD")).unwrap(),
+            read_note(root, "notes/renamed.MD", &session)
+                .unwrap()
+                .content,
             "# Original"
         );
 
         // The target must not already exist.
         assert!(rename_note(root, "notes/renamed.MD", "taken.md").is_err());
         assert_eq!(
-            fs::read_to_string(root.join("notes/taken.md")).unwrap(),
+            read_note(root, "notes/taken.md", &session).unwrap().content,
             "# Taken"
         );
         assert_eq!(
-            fs::read_to_string(root.join("notes/renamed.MD")).unwrap(),
+            read_note(root, "notes/renamed.MD", &session)
+                .unwrap()
+                .content,
             "# Original"
         );
 
@@ -502,10 +656,27 @@ mod tests {
     }
 
     #[test]
+    fn rename_keeps_the_note_decryptable() {
+        let workspace = TestDir::new("rename-encrypted");
+        let session = test_session();
+        write_sealed(workspace.path(), "notes/old.md", "# Original", &session);
+
+        rename_note(workspace.path(), "notes/old.md", "new.markdown").unwrap();
+
+        assert_eq!(
+            read_note(workspace.path(), "notes/new.markdown", &session)
+                .unwrap()
+                .content,
+            "# Original"
+        );
+    }
+
+    #[test]
     fn rename_keeps_the_note_in_its_original_folder() {
         let workspace = TestDir::new("rename-same-folder");
-        workspace.write("a/note.md", "# A");
-        workspace.write("b/keep.md", "# B");
+        let session = test_session();
+        write_sealed(workspace.path(), "a/note.md", "# A", &session);
+        write_sealed(workspace.path(), "b/keep.md", "# B", &session);
 
         let relative = rename_note(workspace.path(), "a/note.md", "renamed.md").unwrap();
         assert_eq!(relative, "a/renamed.md");
@@ -516,9 +687,10 @@ mod tests {
     #[test]
     fn deletes_only_the_requested_note() {
         let workspace = TestDir::new("delete");
-        workspace.write("notes/target.md", "target");
-        workspace.write("notes/keep.md", "keep");
-        workspace.write("other.md", "other");
+        let session = test_session();
+        write_sealed(workspace.path(), "notes/target.md", "target", &session);
+        write_sealed(workspace.path(), "notes/keep.md", "keep", &session);
+        write_sealed(workspace.path(), "other.md", "other", &session);
         workspace.write("not-a-note.txt", "text");
         fs::create_dir_all(workspace.path().join("folder.md")).unwrap();
         let root = workspace.path();
@@ -526,10 +698,13 @@ mod tests {
         delete_note(root, "notes/target.md").unwrap();
         assert!(!root.join("notes/target.md").exists());
         assert_eq!(
-            fs::read_to_string(root.join("notes/keep.md")).unwrap(),
+            read_note(root, "notes/keep.md", &session).unwrap().content,
             "keep"
         );
-        assert_eq!(fs::read_to_string(root.join("other.md")).unwrap(), "other");
+        assert_eq!(
+            read_note(root, "other.md", &session).unwrap().content,
+            "other"
+        );
         assert_eq!(
             fs::read_to_string(root.join("not-a-note.txt")).unwrap(),
             "text"
