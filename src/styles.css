@@ -2841,7 +2841,8 @@ kbd {
 }
 
 .entry-dialog,
-.delete-dialog {
+.delete-dialog,
+.vault-dialog {
   width: min(420px, calc(100vw - 48px));
   max-height: calc(100vh - 40px);
   margin: auto;
@@ -2856,19 +2857,22 @@ kbd {
 }
 
 .entry-dialog::backdrop,
-.delete-dialog::backdrop {
+.delete-dialog::backdrop,
+.vault-dialog::backdrop {
   background: rgba(25, 20, 14, 0.34);
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
 }
 
 [data-theme="dark"] .entry-dialog::backdrop,
-[data-theme="dark"] .delete-dialog::backdrop {
+[data-theme="dark"] .delete-dialog::backdrop,
+[data-theme="dark"] .vault-dialog::backdrop {
   background: rgba(0, 0, 0, 0.5);
 }
 
 .entry-dialog[open],
-.delete-dialog[open] {
+.delete-dialog[open],
+.vault-dialog[open] {
   animation: dialogIn 240ms var(--ease-out) both;
 }
 
@@ -2876,6 +2880,7 @@ kbd {
    the entrance transform so fixed positioning and overflow are viewport-based. */
 .entry-dialog.dialog--menu-open,
 .delete-dialog.dialog--menu-open,
+.vault-dialog.dialog--menu-open,
 .shortcut-dialog.dialog--menu-open {
   overflow: visible;
   transform: none !important;
@@ -2916,6 +2921,66 @@ kbd {
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.7;
+}
+
+.vault-dialog__form {
+  padding: 22px 22px 20px;
+}
+
+.vault-dialog__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.vault-dialog__eyebrow {
+  margin: 0 0 5px;
+  color: var(--accent);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.vault-dialog__head h2 {
+  margin: 0;
+  font-family: var(--font-reading);
+  font-size: 22px;
+  font-weight: 620;
+  letter-spacing: -0.02em;
+}
+
+.vault-dialog__description {
+  margin: 10px 0 17px;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.vault-warning {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--accent);
+  border-radius: 7px;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.vault-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vault-check {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 4px 0 2px;
+  font-size: 11.5px;
+  color: var(--muted);
 }
 
 .name-field {

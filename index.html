@@ -482,6 +482,45 @@
       </div>
     </dialog>
 
+    <dialog id="vault-dialog" class="vault-dialog" aria-labelledby="vault-title">
+      <form id="vault-form" class="vault-dialog__form" novalidate>
+        <div class="vault-dialog__head">
+          <div>
+            <p id="vault-eyebrow" class="vault-dialog__eyebrow">ENCRYPTED LIBRARY</p>
+            <h2 id="vault-title">解锁加密笔记库</h2>
+          </div>
+          <button id="vault-close" class="icon-btn" type="button" aria-label="关闭" data-icon="x"></button>
+        </div>
+        <p id="vault-description" class="vault-dialog__description"></p>
+        <div id="vault-warning" class="vault-warning" hidden></div>
+        <div class="vault-fields">
+          <label class="name-field" for="vault-password">
+            <span class="name-field__label">密码</span>
+            <span class="name-field__control">
+              <input id="vault-password" class="name-field__input" type="password"
+                     autocomplete="current-password" aria-describedby="vault-error" />
+            </span>
+          </label>
+          <label id="vault-confirm-field" class="name-field" for="vault-password-confirm" hidden>
+            <span class="name-field__label">确认密码</span>
+            <span class="name-field__control">
+              <input id="vault-password-confirm" class="name-field__input" type="password"
+                     autocomplete="new-password" aria-describedby="vault-error" />
+            </span>
+          </label>
+        </div>
+        <label id="vault-backup-field" class="vault-check" hidden>
+          <input id="vault-backup" type="checkbox" />
+          <span>我已了解密码无法找回，并已备份整个文件夹。</span>
+        </label>
+        <p id="vault-error" class="field-error" role="alert"></p>
+        <div class="entry-dialog__actions">
+          <button id="vault-cancel" class="dialog-btn" type="button">取消</button>
+          <button id="vault-confirm" class="dialog-btn dialog-btn--primary" type="submit">解锁</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

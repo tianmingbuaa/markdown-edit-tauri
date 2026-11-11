@@ -35,10 +35,6 @@ export interface SavedNote {
 }
 
 export const workspaceApi = {
-  open(path: string): Promise<WorkspaceInfo> {
-    return invoke<WorkspaceInfo>("open_workspace", { path });
-  },
-
   inspect(path: string): Promise<VaultInspection> {
     return invoke<VaultInspection>("inspect_workspace", { path });
   },
