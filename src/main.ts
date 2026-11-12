@@ -8,7 +8,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type Vditor from "vditor";
 
 import { errorMessage, isDesktopRuntime, workspaceApi } from "./lib/api";
-import type { NoteDocument, NoteEntry, WorkspaceInfo } from "./lib/api";
+import type { NoteDocument, NoteEntry, VaultInspection, WorkspaceInfo } from "./lib/api";
 import { readClipboardText, writeClipboardText } from "./lib/clipboard";
 import { applyEditorTheme, createEditor } from "./lib/editor";
 import {
@@ -105,6 +105,21 @@ class MojianApp {
   private deleteError!: HTMLElement;
   private deleteConfirm!: HTMLButtonElement;
   private deleteCancel!: HTMLButtonElement;
+  private vaultDialog!: HTMLDialogElement;
+  private vaultForm!: HTMLFormElement;
+  private vaultEyebrow!: HTMLElement;
+  private vaultTitle!: HTMLElement;
+  private vaultDescription!: HTMLElement;
+  private vaultWarning!: HTMLElement;
+  private vaultPassword!: HTMLInputElement;
+  private vaultPasswordConfirm!: HTMLInputElement;
+  private vaultConfirmField!: HTMLElement;
+  private vaultBackupField!: HTMLElement;
+  private vaultBackup!: HTMLInputElement;
+  private vaultError!: HTMLElement;
+  private vaultConfirm!: HTMLButtonElement;
+  private vaultCancel!: HTMLButtonElement;
+  private vaultClose!: HTMLButtonElement;
   private themeToggle!: HTMLButtonElement;
   private themeLabel!: HTMLElement;
   private topbar!: HTMLElement;
@@ -173,6 +188,9 @@ class MojianApp {
   private entryBusy = false;
   private deleteTarget: NoteEntry | null = null;
   private deleteBusy = false;
+  private vaultMode: "unlock" | "create" | "resume" | null = null;
+  private vaultInspection: VaultInspection | null = null;
+  private vaultResolver: ((value: string | null) => void) | null = null;
   private contextMenuAnchor: HTMLElement | null = null;
   private contextMenuHostDialog: HTMLDialogElement | null = null;
 
@@ -184,6 +202,7 @@ class MojianApp {
   async init(): Promise<void> {
     hydrateIcons();
     this.collectDom();
+    storage.purgeLegacyMetadata();
     this.dark = document.documentElement.dataset.theme === "dark";
     this.bindUi();
     this.bindKeyboard();
@@ -208,7 +227,6 @@ class MojianApp {
     this.updateWelcome();
 
     this.app.dataset.ready = "true";
-    void this.restoreLastWorkspace();
   }
 
   private collectDom(): void {
@@ -246,6 +264,21 @@ class MojianApp {
     this.deleteError = byId<HTMLElement>("delete-error");
     this.deleteConfirm = byId<HTMLButtonElement>("delete-confirm");
     this.deleteCancel = byId<HTMLButtonElement>("delete-cancel");
+    this.vaultDialog = byId<HTMLDialogElement>("vault-dialog");
+    this.vaultForm = byId<HTMLFormElement>("vault-form");
+    this.vaultEyebrow = byId<HTMLElement>("vault-eyebrow");
+    this.vaultTitle = byId<HTMLElement>("vault-title");
+    this.vaultDescription = byId<HTMLElement>("vault-description");
+    this.vaultWarning = byId<HTMLElement>("vault-warning");
+    this.vaultPassword = byId<HTMLInputElement>("vault-password");
+    this.vaultPasswordConfirm = byId<HTMLInputElement>("vault-password-confirm");
+    this.vaultConfirmField = byId<HTMLElement>("vault-confirm-field");
+    this.vaultBackupField = byId<HTMLElement>("vault-backup-field");
+    this.vaultBackup = byId<HTMLInputElement>("vault-backup");
+    this.vaultError = byId<HTMLElement>("vault-error");
+    this.vaultConfirm = byId<HTMLButtonElement>("vault-confirm");
+    this.vaultCancel = byId<HTMLButtonElement>("vault-cancel");
+    this.vaultClose = byId<HTMLButtonElement>("vault-close");
     this.themeToggle = byId<HTMLButtonElement>("theme-toggle");
     this.themeLabel = byId<HTMLElement>("theme-label");
     this.saveStatus = byId<HTMLButtonElement>("save-status");
@@ -399,6 +432,26 @@ class MojianApp {
       }
     });
 
+    this.vaultForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.submitVaultPrompt();
+    });
+    this.vaultPassword.addEventListener("input", () => {
+      this.vaultError.textContent = "";
+    });
+    this.vaultPasswordConfirm.addEventListener("input", () => {
+      this.vaultError.textContent = "";
+    });
+    this.vaultBackup.addEventListener("change", () => {
+      this.vaultError.textContent = "";
+    });
+    this.vaultCancel.addEventListener("click", () => this.finishVaultPrompt(null));
+    this.vaultClose.addEventListener("click", () => this.finishVaultPrompt(null));
+    this.vaultDialog.addEventListener("cancel", (event) => {
+      event.preventDefault();
+      this.finishVaultPrompt(null);
+    });
+
     document.addEventListener("pointerdown", (event) => {
       if (this.contextMenu.hidden) return;
       const target = event.target;
@@ -475,7 +528,10 @@ class MojianApp {
         }
 
         const dialogOpen =
-          this.entryDialog.open || this.deleteDialog.open || this.shortcutDialog.open;
+          this.entryDialog.open ||
+          this.deleteDialog.open ||
+          this.vaultDialog.open ||
+          this.shortcutDialog.open;
         if (dialogOpen) return;
 
         if (event.key === "F2") {
@@ -776,37 +832,6 @@ class MojianApp {
     if (persist) storage.setSidebarCollapsed(collapsed);
   }
 
-  private async restoreLastWorkspace(): Promise<void> {
-    const last = storage.getLastWorkspace();
-    if (!last) {
-      this.updateWelcome();
-      return;
-    }
-
-    this.setWorkspaceBusy(true);
-    this.fileTree.innerHTML = `
-      <div class="tree-skeleton" aria-hidden="true">
-        <span></span><span></span><span></span><span></span>
-      </div>`;
-
-    try {
-      const info = await workspaceApi.open(last);
-      this.adoptWorkspace(info);
-      this.fileTree.scrollTop = 0;
-    } catch (error) {
-      storage.setLastWorkspace(null);
-      this.setWorkspaceBusy(false);
-      this.renderTree();
-      this.updateWorkspaceChrome();
-      this.updateWelcome();
-      this.showToast({
-        kind: "info",
-        message: `未能恢复上次的笔记库：${errorMessage(error)}`,
-        duration: 6500,
-      });
-    }
-  }
-
   private adoptWorkspace(info: WorkspaceInfo): void {
     this.workspace = info;
     this.tree = buildFileTree(info.notes, info.folders ?? []);
@@ -824,7 +849,6 @@ class MojianApp {
     this.setWorkspaceBusy(false);
     this.setSaveState("idle");
     this.setDirtyDot(false);
-    storage.setLastWorkspace(info.path);
 
     this.updateWorkspaceChrome();
     this.renderTree();
@@ -881,7 +905,7 @@ class MojianApp {
         '<span class="welcome__eyebrow-rule" aria-hidden="true"></span>MOJIAN · MARKDOWN STUDIO';
       this.welcomeTitle.innerHTML = "把思绪，<br /><em>写进纸间。</em>";
       this.welcomeDescription.textContent =
-        "打开一个本地文件夹，把它变成你的 Markdown 笔记库。选择、书写，余下的一切交给自动保存。";
+        "打开或创建一个加密笔记库。笔记在磁盘上以密文保存，只有输入密码才能读取。";
       return;
     }
 
@@ -2546,6 +2570,103 @@ class MojianApp {
     if (disabled) this.closeContextMenu();
   }
 
+  private promptVaultPassword(
+    mode: "unlock" | "create" | "resume",
+    inspection: VaultInspection,
+    error?: string,
+  ): Promise<string | null> {
+    this.closeContextMenu();
+    if (this.vaultResolver) this.finishVaultPrompt(null);
+    if (this.vaultDialog.open) this.vaultDialog.close();
+
+    this.vaultMode = mode;
+    this.vaultInspection = inspection;
+    this.vaultPassword.value = "";
+    this.vaultPasswordConfirm.value = "";
+    this.vaultBackup.checked = false;
+    this.vaultError.textContent = error ?? "";
+    this.vaultWarning.hidden = true;
+    this.vaultConfirmField.hidden = true;
+    this.vaultBackupField.hidden = true;
+
+    const { name, noteCount } = inspection;
+
+    if (mode === "create") {
+      this.vaultEyebrow.textContent = "NEW ENCRYPTED LIBRARY";
+      this.vaultTitle.textContent = "创建加密笔记库";
+      this.vaultDescription.textContent =
+        noteCount === 0
+          ? `「${name}」将创建一个加密笔记库。密码只用于本机解锁。`
+          : `「${name}」中的 ${noteCount} 篇明文笔记将被原地加密。`;
+      this.vaultWarning.textContent =
+        "密码不会被保存。忘记密码后无法找回，也无法解密任何笔记。加密会原地覆盖现有文件，创建前请先备份整个文件夹。";
+      this.vaultWarning.hidden = false;
+      this.vaultConfirmField.hidden = false;
+      this.vaultBackupField.hidden = noteCount === 0;
+      this.vaultConfirm.textContent = "创建并加密";
+      this.vaultPassword.autocomplete = "new-password";
+    } else if (mode === "resume") {
+      this.vaultEyebrow.textContent = "ENCRYPTED LIBRARY";
+      this.vaultTitle.textContent = "继续完成加密";
+      this.vaultDescription.textContent = "上次加密没有完成。解锁后会继续加密剩余笔记。";
+      this.vaultConfirm.textContent = "解锁并继续";
+      this.vaultPassword.autocomplete = "current-password";
+    } else {
+      this.vaultEyebrow.textContent = "ENCRYPTED LIBRARY";
+      this.vaultTitle.textContent = "解锁加密笔记库";
+      this.vaultDescription.textContent = `「${name}」中有 ${noteCount} 篇笔记。输入密码后打开。`;
+      this.vaultConfirm.textContent = "解锁";
+      this.vaultPassword.autocomplete = "current-password";
+    }
+
+    return new Promise<string | null>((resolve) => {
+      this.vaultResolver = resolve;
+      this.vaultDialog.showModal();
+      requestAnimationFrame(() => this.vaultPassword.focus());
+    });
+  }
+
+  private submitVaultPrompt(): void {
+    const mode = this.vaultMode;
+    const inspection = this.vaultInspection;
+    if (!mode || !inspection) return;
+
+    const password = this.vaultPassword.value;
+    if (!password) {
+      this.vaultError.textContent = "请输入密码。";
+      this.vaultPassword.focus();
+      return;
+    }
+
+    if (mode === "create") {
+      if (password !== this.vaultPasswordConfirm.value) {
+        this.vaultError.textContent = "两次输入的密码不一致。";
+        this.vaultPasswordConfirm.focus();
+        return;
+      }
+      if (inspection.noteCount > 0 && !this.vaultBackup.checked) {
+        this.vaultError.textContent = "请先勾选备份确认后再创建。";
+        this.vaultBackup.focus();
+        return;
+      }
+    }
+
+    this.finishVaultPrompt(password);
+  }
+
+  private finishVaultPrompt(value: string | null): void {
+    this.vaultPassword.value = "";
+    this.vaultPasswordConfirm.value = "";
+    this.vaultBackup.checked = false;
+    this.vaultError.textContent = "";
+    if (this.vaultDialog.open) this.vaultDialog.close();
+    this.vaultMode = null;
+    this.vaultInspection = null;
+    const resolver = this.vaultResolver;
+    this.vaultResolver = null;
+    resolver?.(value);
+  }
+
   private async openWorkspaceDialog(): Promise<void> {
     if (this.workspaceBusy) return;
     if (!isDesktopRuntime()) {
@@ -2561,7 +2682,7 @@ class MojianApp {
       selected = await openDialog({
         directory: true,
         multiple: false,
-        title: "选择 Markdown 笔记库",
+        title: "选择加密笔记库",
         defaultPath: this.workspace?.path,
       });
     } catch (error) {
@@ -2589,21 +2710,72 @@ class MojianApp {
     }
 
     this.setWorkspaceBusy(true);
+    let inspection: VaultInspection;
     try {
-      const info = await workspaceApi.open(path);
-      this.adoptWorkspace(info);
-      this.showToast({
-        kind: "success",
-        message: `已打开「${info.name}」 · ${info.notes.length} 篇笔记`,
-      });
+      inspection = await workspaceApi.inspect(path);
     } catch (error) {
-      this.setWorkspaceBusy(false);
       this.showToast({
         kind: "error",
         message: `无法打开这个笔记库：${errorMessage(error)}`,
         actionLabel: "重试",
         onAction: () => void this.openWorkspaceDialog(),
       });
+      return;
+    } finally {
+      this.setWorkspaceBusy(false);
+    }
+
+    let mode: "unlock" | "create" | "resume" =
+      inspection.kind === "needsCreation"
+        ? "create"
+        : inspection.kind === "ready"
+          ? "unlock"
+          : "resume";
+    let promptError: string | undefined;
+
+    while (true) {
+      const password = await this.promptVaultPassword(mode, inspection, promptError);
+      if (password === null) return;
+
+      this.setWorkspaceBusy(true);
+      try {
+        const info =
+          mode === "create"
+            ? await workspaceApi.createVault(path, password)
+            : await workspaceApi.openVault(path, password);
+        this.adoptWorkspace(info);
+        this.showToast({
+          kind: "success",
+          message:
+            mode === "create"
+              ? `已创建加密库「${info.name}」 · ${info.notes.length} 篇笔记`
+              : `已解锁「${info.name}」 · ${info.notes.length} 篇笔记`,
+        });
+        return;
+      } catch (cause) {
+        this.setWorkspaceBusy(false);
+        promptError = errorMessage(cause);
+
+        // Creation may have written the marker before failing. Re-inspect so a
+        // retry resumes/ unlocks the existing library instead of trying to
+        // create it a second time.
+        if (mode === "create") {
+          this.setWorkspaceBusy(true);
+          try {
+            const recheck = await workspaceApi.inspect(path);
+            inspection = recheck;
+            if (recheck.kind === "ready") {
+              mode = "unlock";
+            } else if (recheck.kind === "migrating") {
+              mode = "resume";
+            }
+          } catch {
+            // Inspection failed; keep the create mode and let the user retry.
+          } finally {
+            this.setWorkspaceBusy(false);
+          }
+        }
+      }
     }
   }
 

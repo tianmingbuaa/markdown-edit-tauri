@@ -1,12 +1,14 @@
 const PREFIX = "mojian.";
 const KEYS = {
   theme: `${PREFIX}theme`,
-  lastWorkspace: `${PREFIX}last-workspace`,
-  recent: `${PREFIX}recent`,
-  collapsed: `${PREFIX}collapsed`,
   sidebarWidth: `${PREFIX}sidebar-width`,
   sidebarCollapsed: `${PREFIX}sidebar-collapsed`,
 } as const;
+
+const LEGACY_KEYS = ["mojian.last-workspace", "mojian.recent", "mojian.collapsed"];
+
+const memoryRecent = new Map<string, RecentNote[]>();
+const memoryCollapsed = new Map<string, Set<string>>();
 
 export interface RecentNote {
   path: string;
@@ -55,68 +57,52 @@ export const storage = {
     }
   },
 
-  getLastWorkspace(): string | null {
+  purgeLegacyMetadata(): void {
     try {
-      return localStorage.getItem(KEYS.lastWorkspace);
-    } catch (_) {
-      return null;
-    }
-  },
-
-  setLastWorkspace(path: string | null): void {
-    try {
-      if (path) {
-        localStorage.setItem(KEYS.lastWorkspace, path);
-      } else {
-        localStorage.removeItem(KEYS.lastWorkspace);
-      }
+      for (const key of LEGACY_KEYS) localStorage.removeItem(key);
     } catch (_) {
       /* ignore */
     }
   },
 
   getRecent(workspacePath: string): RecentNote[] {
-    const all = read<Record<string, RecentNote[]>>(KEYS.recent, {});
-    return Array.isArray(all[workspacePath]) ? all[workspacePath] : [];
+    return (memoryRecent.get(workspacePath) ?? []).slice();
   },
 
   pushRecent(workspacePath: string, note: { path: string; name: string }): RecentNote[] {
-    const all = read<Record<string, RecentNote[]>>(KEYS.recent, {});
-    const previous = Array.isArray(all[workspacePath]) ? all[workspacePath] : [];
+    const previous = memoryRecent.get(workspacePath) ?? [];
     const next: RecentNote[] = [
       { path: note.path, name: note.name, at: Date.now() },
       ...previous.filter((item) => item.path !== note.path),
     ].slice(0, 6);
-    all[workspacePath] = next;
-    write(KEYS.recent, all);
-    return next;
+    memoryRecent.set(workspacePath, next);
+    return next.slice();
   },
 
   removeRecent(workspacePath: string, notePath: string): void {
-    const all = read<Record<string, RecentNote[]>>(KEYS.recent, {});
-    const previous = Array.isArray(all[workspacePath]) ? all[workspacePath] : [];
-    all[workspacePath] = previous.filter((item) => item.path !== notePath);
-    write(KEYS.recent, all);
+    const previous = memoryRecent.get(workspacePath) ?? [];
+    memoryRecent.set(
+      workspacePath,
+      previous.filter((item) => item.path !== notePath),
+    );
   },
 
   renameRecent(workspacePath: string, oldPath: string, next: { path: string; name: string }): void {
-    const all = read<Record<string, RecentNote[]>>(KEYS.recent, {});
-    const previous = Array.isArray(all[workspacePath]) ? all[workspacePath] : [];
-    all[workspacePath] = previous.map((item) =>
-      item.path === oldPath ? { ...item, path: next.path, name: next.name } : item,
+    const previous = memoryRecent.get(workspacePath) ?? [];
+    memoryRecent.set(
+      workspacePath,
+      previous.map((item) =>
+        item.path === oldPath ? { ...item, path: next.path, name: next.name } : item,
+      ),
     );
-    write(KEYS.recent, all);
   },
 
   getCollapsedFolders(workspacePath: string): Set<string> {
-    const all = read<Record<string, string[]>>(KEYS.collapsed, {});
-    return new Set(Array.isArray(all[workspacePath]) ? all[workspacePath] : []);
+    return new Set(memoryCollapsed.get(workspacePath) ?? []);
   },
 
   setCollapsedFolders(workspacePath: string, folders: Set<string>): void {
-    const all = read<Record<string, string[]>>(KEYS.collapsed, {});
-    all[workspacePath] = [...folders];
-    write(KEYS.collapsed, all);
+    memoryCollapsed.set(workspacePath, new Set(folders));
   },
 
   getSidebarWidth(): number | null {

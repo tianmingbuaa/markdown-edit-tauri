@@ -84,15 +84,14 @@ impl Workspace {
     }
 }
 
-/// Validate and canonicalize a user-chosen folder, then scan it.
+/// Validate a user-chosen folder and build its workspace metadata.
 ///
-/// Scanning happens before the caller stores the workspace so a failed open
-/// never leaves a half-initialized workspace in state.
-pub fn open_workspace_folder(path: &Path) -> Result<(Workspace, WorkspaceScan), String> {
-    let root = security::verify_workspace_dir(path)?;
+/// Callers scan separately so a later scan failure can be handled without
+/// keeping a half-initialized workspace.
+pub fn workspace_from_root(root: &Path) -> Result<Workspace, String> {
+    let root = security::verify_workspace_dir(root)?;
     let name = workspace_name(&root);
-    let scan = scan_workspace(&root)?;
-    Ok((Workspace { root, name }, scan))
+    Ok(Workspace { root, name })
 }
 
 /// Create exactly one new directory below `raw_parent` in the workspace.
@@ -397,7 +396,8 @@ mod tests {
         let workspace = TestDir::new("open");
         workspace.write("note.md", "# Note");
         fs::create_dir_all(workspace.path().join("empty")).unwrap();
-        let (active, scan) = open_workspace_folder(workspace.path()).unwrap();
+        let active = workspace_from_root(workspace.path()).unwrap();
+        let scan = scan_workspace(&active.root).unwrap();
         assert_eq!(active.root, fs::canonicalize(workspace.path()).unwrap());
         assert_eq!(
             active.name,
@@ -411,8 +411,8 @@ mod tests {
         assert_eq!(info.folders, vec!["empty"]);
 
         let file = workspace.write("plain.txt", "not a folder");
-        assert!(open_workspace_folder(&file).is_err());
-        assert!(open_workspace_folder(&workspace.path().join("missing")).is_err());
+        assert!(workspace_from_root(&file).is_err());
+        assert!(workspace_from_root(&workspace.path().join("missing")).is_err());
     }
 
     #[test]
